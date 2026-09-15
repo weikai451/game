@@ -7,12 +7,6 @@ class AnimatedSprite:
         self.current_state = ""
         self.current_frames = 0
 
-        self.animation_speed = {
-            "Run": 0.2,
-            "idle": 0.1,
-            "Attack": 0.4
-        }
-
 
     def load_animation(self, state_name, sheet_path, total_frames):
 
@@ -39,10 +33,10 @@ class AnimatedSprite:
 
 
     
-    def update_get_image(self):
+    def update_get_image(self, speed):
 
         current_list = self.animation[self.current_state]
-        self.current_frames += self.animation_speed[self.current_state]
+        self.current_frames += speed
 
         if self.current_frames >= len(current_list):
             self.current_frames = 0

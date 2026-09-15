@@ -35,7 +35,7 @@ class Game:
 
             self.all_sprite.update()
             self.all_sprite.draw(self.screen)
-
+            self.player1.attack_hitbox(self.all_sprite, self.screen)
             pygame.display.update()
 
             self.clock.tick(60)
