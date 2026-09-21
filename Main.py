@@ -1,28 +1,32 @@
 import pygame
 import sys
 import Player
+import Boss1
 
 class Game:
     def __init__(self):
         pygame.init()
 
         pygame.display.set_caption("Final Project")
-        self.screen = pygame.display.set_mode((640, 480))
+        self.screen = pygame.display.set_mode((640, 480), pygame.RESIZABLE | pygame.SCALED)
 
         self.clock = pygame.time.Clock()
 
         self.background = pygame.image.load("asset/Legacy-Fantasy - High Forest 2.3/Background/Background.png")
-
+        self.background = pygame.transform.scale(self.background, (640, 480))
         self.all_sprite = pygame.sprite.Group()
 
         self.player1 = Player.Player()
+        self.boss1 = Boss1.Vergil()
         
         self.all_sprite.add(self.player1)
+        self.all_sprite.add(self.boss1)
 
 
     def run(self):
         while True:
-            self.screen.blit(self.background, (100, 100))
+            self.screen.fill((0, 0, 0))
+            self.screen.blit(self.background, (0, 0))
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:

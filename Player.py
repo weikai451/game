@@ -19,9 +19,9 @@ class Player(pygame.sprite.Sprite):
         self.is_attacking = False
         self.flip = False
         self.animator = AnimatedSprite()
-        self.animator.load_animation("idle", "asset/Legacy-Fantasy - High Forest 2.3/Character/Idle/Idle-Sheet.png", 4)
-        self.animator.load_animation("Run", "asset/Legacy-Fantasy - High Forest 2.3/Character/Run/Run-Sheet.png", 8)
-        self.animator.load_animation("Attack", "asset/Legacy-Fantasy - High Forest 2.3/Character/Attack-01/Attack-01-Sheet.png", 8)
+        self.animator.load_animation("idle", "asset/Legacy-Fantasy - High Forest 2.3/Character/Idle/Idle-Sheet.png", 4, 1.0)
+        self.animator.load_animation("Run", "asset/Legacy-Fantasy - High Forest 2.3/Character/Run/Run-Sheet.png", 8, 1.0)
+        self.animator.load_animation("Attack", "asset/Legacy-Fantasy - High Forest 2.3/Character/Attack-01/Attack-01-Sheet.png", 8, 1.0)
 
         self.animator.play("idle")
 
@@ -37,13 +37,13 @@ class Player(pygame.sprite.Sprite):
 
     def attack_hitbox(self, enemies_group, screen):
         if self.is_attacking and 3 <= self.animator.current_frames <= 5:
-            hitbox_width, hitbox_height = 50, 60
+            hitbox_width, hitbox_height = 22, 40
             if self.flip:
-                hitbox_x = self.rect.left - hitbox_width - 5
+                hitbox_x = self.rect.left - hitbox_width + 25
             else:
-                hitbox_x = self.rect.right + 5
+                hitbox_x = self.rect.right
 
-            attack_rect = pygame.Rect(hitbox_x, self.rect.y, hitbox_width, hitbox_height)
+            attack_rect = pygame.Rect(hitbox_x, self.rect.y + 20, hitbox_width, hitbox_height)
             pygame.draw.rect(screen, (250, 0, 0), attack_rect)
 
             for enemy in enemies_group:

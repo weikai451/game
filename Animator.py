@@ -8,7 +8,7 @@ class AnimatedSprite:
         self.current_frames = 0
 
 
-    def load_animation(self, state_name, sheet_path, total_frames):
+    def load_animation(self, state_name, sheet_path, total_frames, scale_ratio):
 
         sprite_sheet = pygame.image.load(sheet_path)
         frames = []
@@ -21,7 +21,17 @@ class AnimatedSprite:
             crop_y = 0
 
             rect = pygame.Rect(crop_x, crop_y, frame_width, total_height)
-            frames.append(sprite_sheet.subsurface(rect))
+
+            frame_subsurface = sprite_sheet.subsurface(rect)
+
+            if scale_ratio != 1:
+                new_width = int(frame_width * scale_ratio)
+                new_height = int(total_height * scale_ratio)
+                frame_subsurface = pygame.transform.scale(frame_subsurface, (new_width, new_height))
+
+            frames.append(frame_subsurface)
+
+
 
         self.animation[state_name] = frames
 
