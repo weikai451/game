@@ -8,19 +8,21 @@ class Game:
         pygame.init()
 
         pygame.display.set_caption("Final Project")
-        self.screen = pygame.display.set_mode((640, 480), pygame.RESIZABLE | pygame.SCALED)
+        self.screen = pygame.display.set_mode((1280, 720), pygame.RESIZABLE | pygame.SCALED)
 
         self.clock = pygame.time.Clock()
 
         self.background = pygame.image.load("asset/Legacy-Fantasy - High Forest 2.3/Background/Background.png")
-        self.background = pygame.transform.scale(self.background, (640, 480))
+        self.background = pygame.transform.scale(self.background, (1280, 720))
         self.all_sprite = pygame.sprite.Group()
+        self.enemy_group = pygame.sprite.Group()
 
         self.player1 = Player.Player()
-        self.boss1 = Boss1.Vergil()
+        self.boss1 = Boss1.Vergil(self.player1)
         
         self.all_sprite.add(self.player1)
         self.all_sprite.add(self.boss1)
+        self.enemy_group.add(self.boss1)
 
 
     def run(self):
@@ -39,7 +41,7 @@ class Game:
 
             self.all_sprite.update()
             self.all_sprite.draw(self.screen)
-            self.player1.attack_hitbox(self.all_sprite, self.screen)
+            self.player1.attack_hitbox(self.enemy_group, self.screen)
             pygame.display.update()
 
             self.clock.tick(60)

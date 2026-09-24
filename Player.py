@@ -48,7 +48,7 @@ class Player(pygame.sprite.Sprite):
 
             for enemy in enemies_group:
                 if attack_rect.colliderect(enemy.rect):
-                    pass
+                    enemy.be_attacked()
         
 
 
