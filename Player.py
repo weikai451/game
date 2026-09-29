@@ -47,7 +47,7 @@ class Player(pygame.sprite.Sprite):
             pygame.draw.rect(screen, (250, 0, 0), attack_rect)
 
             for enemy in enemies_group:
-                if attack_rect.colliderect(enemy.rect):
+                if attack_rect.colliderect(enemy.hitbox):
                     enemy.be_attacked()
         
 

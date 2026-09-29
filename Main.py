@@ -42,6 +42,7 @@ class Game:
             self.all_sprite.update()
             self.all_sprite.draw(self.screen)
             self.player1.attack_hitbox(self.enemy_group, self.screen)
+            pygame.draw.rect(self.screen, (255, 0, 0), self.boss1.hitbox, 2)
             pygame.display.update()
 
             self.clock.tick(60)
