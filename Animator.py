@@ -27,7 +27,7 @@ class AnimatedSprite:
             if scale_ratio != 1:
                 new_width = int(frame_width * scale_ratio)
                 new_height = int(total_height * scale_ratio)
-                frame_subsurface = pygame.transform.scale(frame_subsurface, (new_width, new_height))
+                frame_subsurface = pygame.transform.scale(frame_subsurface, (new_width, new_height)).convert_alpha()
 
             frames.append(frame_subsurface)
 

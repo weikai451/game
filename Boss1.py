@@ -23,14 +23,14 @@ class Vergil(pygame.sprite.Sprite):
         self.is_cooldown = False
 
         self.animator = AnimatedSprite()
-        self.animator.load_animation("idle", "asset/Vergil/vergil_idle.png", 4, 0.12)
+        self.animator.load_animation("idle", "asset/Vergil/vergil_idle.png", 4, 0.11)
         self.animator.load_animation("Run", "asset/Vergil/vergil_run.png", 6, 0.12)
         self.animator.load_animation("Attack1", "asset/Vergil/vergil_attack1.png", 4, 0.12)
         
         self.animator.play("idle")
         
         self.image = self.animator.update_get_image(self.animation_speed["idle"])
-        self.hitbox = pygame.Rect(320, 240, 90, 120)
+        self.hitbox = pygame.Rect(320, 240, 85, 110)
         self.rect = self.hitbox.copy()
 
     def update(self):
@@ -44,8 +44,10 @@ class Vergil(pygame.sprite.Sprite):
         current_time = pygame.time.get_ticks()
         distance = abs(boss_x - player_x)       
 
+        current_fspeed = self.animation_speed[new_state]
+        
         if self.is_cooldown:
-            if current_time - self.last_attack_time > 700:
+            if current_time - self.last_attack_time > 450:
                 self.is_cooldown = False
 
         elif self.is_attacking:
@@ -67,24 +69,25 @@ class Vergil(pygame.sprite.Sprite):
 
         if self.is_attacking:
             new_state = "Attack1"
-            if int(self.animator.current_frames) == 3 and self.animator.current_state == "Attack1":
+            if self.animator.current_frames + current_fspeed >= 4 and self.animator.current_state == "Attack1":
                 self.is_attacking = False
                 self.is_cooldown = True
                 self.last_attack_time = current_time
+                new_state = "idle"
         elif self.is_moving:
             new_state = "Run"
 
-        current_fspeed = self.animation_speed[new_state]
         self.animator.play(new_state)
         self.image = self.animator.update_get_image(current_fspeed)
 
         if self.flip:
-            self.image = pygame.transform.flip(self.image, True, False)
+            self.image = pygame.transform.flip(self.image, True, False).convert_alpha()
 
         if current_time - self.last_hit_time < 300:
             if (current_time // 75) % 2 == 0:
                 self.image = self.image.copy()
                 self.image.fill((255, 0, 0), special_flags=pygame.BLEND_RGB_ADD)
+        
         self.rect = self.image.get_rect()
         self.rect.midbottom = self.hitbox.midbottom
 

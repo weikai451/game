@@ -9,6 +9,9 @@ class Player(pygame.sprite.Sprite):
         self.player_speed = 5
         self.player_hp = 100
         self.player_stamina = 100
+        self.player_jump_power = 4
+        self.velocity_y = 0
+        self.gravity = 4
 
         self.animation_speed = {
             "Run": 0.2,
@@ -18,6 +21,8 @@ class Player(pygame.sprite.Sprite):
 
         self.is_attacking = False
         self.flip = False
+        self.is_jumping = False
+
         self.animator = AnimatedSprite()
         self.animator.load_animation("idle", "asset/Legacy-Fantasy - High Forest 2.3/Character/Idle/Idle-Sheet.png", 4, 1.0)
         self.animator.load_animation("Run", "asset/Legacy-Fantasy - High Forest 2.3/Character/Run/Run-Sheet.png", 8, 1.0)
@@ -49,8 +54,7 @@ class Player(pygame.sprite.Sprite):
             for enemy in enemies_group:
                 if attack_rect.colliderect(enemy.hitbox):
                     enemy.be_attacked()
-        
-
+            
 
     def update(self):
 
@@ -60,19 +64,30 @@ class Player(pygame.sprite.Sprite):
 
         new_state = "idle"
 
-        if keys[pygame.K_w] or keys[pygame.K_s] or keys[pygame.K_a] or keys[pygame.K_d]:
+        if keys[pygame.K_w]:
+            self.velocity_y = - self.player_jump_power
             is_moving = True
-            if keys[pygame.K_w]: self.rect.y -= self.player_speed
-            if keys[pygame.K_s]: self.rect.y += self.player_speed
+            self.is_jumping = True
 
-            if keys[pygame.K_a]:
-                self.rect.x -= self.player_speed
-                self.flip = True
-            if keys[pygame.K_d]:
-                self.rect.x += self.player_speed
-                self.flip = False
-       
+        if keys[pygame.K_s]:
+            self.rect.y += self.player_speed
+            is_moving = True
 
+        if keys[pygame.K_a]:
+            self.rect.x -= self.player_speed
+            is_moving = True
+            self.flip = True
+
+        if keys[pygame.K_d]:
+            self.rect.x += self.player_speed
+            is_moving = True
+            self.flip = False
+
+        if self.is_jumping:
+            self.rect.y += self.velocity_y
+            self.velocity_y += self.gravity / 60
+        
+        
         if self.is_attacking:
             new_state = "Attack"
             if self.animator.current_frames == 0 and self.animator.current_state == "Attack":
