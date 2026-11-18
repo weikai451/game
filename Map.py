@@ -1,75 +1,225 @@
 import pygame
 import pytmx
+from collision import CollisionSystem
 
 
 class GameMap:
     def __init__(self, map_path):
-        # 讀取 Tiled 匯出的 .tmx 地圖檔
+        self.map_path = map_path
         self.tmx_data = pytmx.load_pygame(map_path)
 
-        # 取得地圖每個圖塊的寬度與高度
+        # Map dimensions
         self.tile_width = self.tmx_data.tilewidth
         self.tile_height = self.tmx_data.tileheight
-
-        # 計算整張地圖的像素尺寸
         self.width = self.tmx_data.width * self.tile_width
         self.height = self.tmx_data.height * self.tile_height
 
-        # 讀取 Tiled 中的矩形碰撞區 (collisions 圖層)
-        self.collision_rects = []
+        # Separated collision geometry:
+        # - self.collisions: Solid walls & floors (block all 4 directions, non-droppable)
+        # - self.platforms: One-Way / Drop-Through elevated platforms (pass-through from below/sides, S+Space drop)
+        # - self.polygons: SAT slope polygons + precomputed AABB bounding boxes
+        self.collisions = []
+        self.collision_rects = self.collisions
+        self.platforms = []
+        self.polygons = []
+        self.polygon_bboxes = []
+        self.portals = []
+
+        self.collision_system = CollisionSystem(self)
+        self.show_collision_debug = True
+
+        # Find Collisions object group (case-insensitive)
+        collision_layer = None
         for layer in self.tmx_data.layers:
-            if getattr(layer, "name", "") == "collisions":
-                for obj in layer:
-                    if getattr(obj, "name", "") == "starting point":
-                        continue
-                    if getattr(obj, "width", 0) > 0 and getattr(obj, "height", 0) > 0:
-                        self.collision_rects.append(
-                            pygame.Rect(int(obj.x), int(obj.y), int(obj.width), int(obj.height))
+            if (getattr(layer, "name", "") or "").strip().lower() == "collisions":
+                collision_layer = layer
+                break
+
+        if collision_layer is not None:
+            for obj in collision_layer:
+                if getattr(obj, "name", "") == "starting point":
+                    continue
+
+                props = getattr(obj, "properties", {}) or {}
+                target_map = (
+                    props.get("target")
+                    or props.get("target_map")
+                    or props.get("target map")
+                )
+
+                if target_map:
+                    spawn_x = props.get("spawn_x") or props.get("spawn x") or 100
+                    spawn_y = props.get("spawn_y") or props.get("spawn y") or 100
+                    portal_data = {
+                        "rect": pygame.Rect(
+                            round(obj.x),
+                            round(obj.y),
+                            round(obj.width),
+                            round(obj.height),
+                        ),
+                        "target_map": str(target_map),
+                        "spawn_x": float(spawn_x),
+                        "spawn_y": float(spawn_y),
+                        "properties": props,
+                    }
+                    self.portals.append(portal_data)
+                    continue
+
+                points = getattr(obj, "points", None)
+                if points:
+                    first_pt_x, first_pt_y = points[0]
+                    is_absolute = (
+                        abs(first_pt_x - obj.x) < 2 and abs(first_pt_y - obj.y) < 2
+                    )
+                    if is_absolute:
+                        polygon = [(round(pt[0]), round(pt[1])) for pt in points]
+                    else:
+                        polygon = [
+                            (round(obj.x + pt[0]), round(obj.y + pt[1]))
+                            for pt in points
+                        ]
+                    if len(polygon) >= 3:
+                        self.polygons.append(polygon)
+                        xs = [p[0] for p in polygon]
+                        ys = [p[1] for p in polygon]
+                        min_x, max_x = min(xs), max(xs)
+                        min_y, max_y = min(ys), max(ys)
+                        self.polygon_bboxes.append(
+                            pygame.Rect(
+                                min_x,
+                                min_y,
+                                max(1, max_x - min_x),
+                                max(1, max_y - min_y),
+                            )
                         )
+                else:
+                    if getattr(obj, "width", 0) <= 0 or getattr(obj, "height", 0) <= 0:
+                        continue
+                    rect = pygame.Rect(
+                        round(obj.x),
+                        round(obj.y),
+                        round(obj.width),
+                        round(obj.height),
+                    )
+                    is_one_way = str(props.get("one_way", "")).lower() in (
+                        "true",
+                        "1",
+                        "yes",
+                    ) or bool(props.get("one_way", False))
+                    if is_one_way:
+                        self.platforms.append(rect)
+                    else:
+                        self.collisions.append(rect)
 
-    
     def draw(self, screen, camera_x=0, camera_y=0):
-    # 逐一讀取地圖中可見的圖層
+        sw = screen.get_width()
+        sh = screen.get_height()
+
+        # 1. Draw Tiled Image Layers & Tile Layers (with viewport culling)
         for layer in self.tmx_data.visible_layers:
-            if isinstance(layer, pytmx.TiledTileLayer):
+            if isinstance(layer, pytmx.TiledImageLayer):
+                if layer.image:
+                    img_x = getattr(layer, "offsetx", getattr(layer, "x", 0)) or 0
+                    img_y = getattr(layer, "offsety", getattr(layer, "y", 0)) or 0
+                    screen_x = img_x - camera_x
+                    screen_y = img_y - camera_y
+                    if (
+                        screen_x + layer.image.get_width() < 0
+                        or screen_x > sw
+                        or screen_y + layer.image.get_height() < 0
+                        or screen_y > sh
+                    ):
+                        continue
+                    screen.blit(layer.image, (screen_x, screen_y))
 
-            # 逐一取得圖塊的位置與圖片
+            elif isinstance(layer, pytmx.TiledTileLayer):
                 for x, y, image in layer.tiles():
-
-                # 將圖塊座標換算成像素座標
-                    pixel_x = x * self.tile_width
-                    pixel_y = y * self.tile_height
-
-                # 減去鏡頭偏移，決定圖塊在畫面上的位置
-                    screen_x = pixel_x - camera_x
-                    screen_y = pixel_y - camera_y
-
-                # 繪製圖塊
+                    if image is None:
+                        continue
+                    screen_x = x * self.tile_width - camera_x
+                    screen_y = y * self.tile_height - camera_y
+                    if (
+                        screen_x + self.tile_width < 0
+                        or screen_x > sw
+                        or screen_y + self.tile_height < 0
+                        or screen_y > sh
+                    ):
+                        continue
                     screen.blit(image, (screen_x, screen_y))
-    
+
+        # 2. Render visual pixel-art platform planks for One-Way Platforms inside camera viewport
+        for plat in self.platforms:
+            sr = plat.move(-camera_x, -camera_y)
+            if sr.right < 0 or sr.left > sw or sr.bottom < 0 or sr.top > sh:
+                continue
+            vis_h = min(14, max(8, sr.height))
+            body_rect = pygame.Rect(sr.x, sr.y, sr.width, vis_h)
+            pygame.draw.rect(screen, (52, 60, 82), body_rect, border_radius=2)
+            pygame.draw.rect(
+                screen, (110, 195, 240), (sr.x, sr.y, sr.width, 4), border_radius=2
+            )
+            pygame.draw.rect(screen, (28, 34, 48), body_rect, 2, border_radius=2)
+            # Subtle rivets/plank joints every 32px
+            for rx in range(sr.x + 16, sr.right - 8, 32):
+                pygame.draw.line(
+                    screen, (35, 42, 58), (rx, sr.y + 4), (rx, sr.y + vis_h - 2), 2
+                )
+
+    def move_with_collisions(self, entity_rect, dx, dy, drop_through=False):
+        return self.collision_system.move_with_collisions(
+            entity_rect, dx, dy, drop_through=drop_through
+        )
+
+    @property
+    def last_on_one_way(self):
+        return self.collision_system.last_on_one_way
+
+    def has_ground_ahead(self, entity_rect, direction, look_ahead=26, drop_depth=56):
+        return self.collision_system.has_ground_ahead(
+            entity_rect, direction, look_ahead=look_ahead, drop_depth=drop_depth
+        )
+
     def get_camera_offset(self, target_rect, screen_width, screen_height):
-        # 讓攝影機盡量將玩家放在畫面中央
         camera_x = target_rect.centerx - screen_width // 2
         camera_y = target_rect.centery - screen_height // 2
 
-        # 限制攝影機不能看到地圖左側以外的區域
-        camera_x = max(0, camera_x)
-        camera_y = max(0, camera_y)
-
-        # 限制攝影機不能超出地圖右側與底部
         max_camera_x = max(0, self.width - screen_width)
         max_camera_y = max(0, self.height - screen_height)
 
-        camera_x = min(camera_x, max_camera_x)
-        camera_y = min(camera_y, max_camera_y)
-
+        camera_x = max(0, min(camera_x, max_camera_x))
+        camera_y = max(0, min(camera_y, max_camera_y))
         return camera_x, camera_y
-    
-        """
-        這段程式會：
-        1. 先計算讓玩家位於畫面中央附近的攝影機位置。
-        2. 限制攝影機不要移出地圖範圍。
-        3. 回傳攝影機的水平、垂直偏移量。
-        這裡的 target_rect 是玩家的碰撞矩形，所以我們需要知道組員的玩家程式是否使用 pygame.Rect。
-        """
-    
+
+    def draw_collision_debug(self, screen, camera_x=0, camera_y=0):
+        if not self.show_collision_debug:
+            return
+
+        # Green: Solid Walls & Ground
+        for rect in self.collisions:
+            screen_rect = rect.move(-camera_x, -camera_y)
+            pygame.draw.rect(screen, (0, 255, 0), screen_rect, 1)
+
+        # Cyan-Blue: One-Way / Drop-Through Platforms
+        for rect in self.platforms:
+            screen_rect = rect.move(-camera_x, -camera_y)
+            pygame.draw.rect(screen, (0, 195, 255), screen_rect, 2)
+
+        # Orange: SAT Slope Polygons
+        for polygon in self.polygons:
+            if len(polygon) < 3:
+                continue
+            screen_points = [
+                (round(x - camera_x), round(y - camera_y)) for x, y in polygon
+            ]
+            pygame.draw.polygon(screen, (255, 140, 0), screen_points, 2)
+
+        # Magenta: Portals
+        for portal in self.portals:
+            p_rect = portal["rect"].move(-camera_x, -camera_y)
+            pygame.draw.rect(screen, (255, 0, 255), p_rect, 2)
+
+    def check_portal(self, player_rect):
+        for portal in self.portals:
+            if player_rect.colliderect(portal["rect"]):
+                return portal
+        return None

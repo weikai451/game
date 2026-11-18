@@ -14,65 +14,81 @@ from VFX import (
 class BossState:
     IDLE = "IDLE"
     CHASE = "CHASE"
-    ATTACK_1 = "ATTACK_1"  # 近距離居合二連斬
-    ATTACK_2 = "ATTACK_2"  # 中距離疾風突進斬 (Dash Slash)
-    ATTACK_3 = "ATTACK_3"  # 遠程次元劍氣波 + 地面次元斬領域
+    ATTACK_1 = "ATTACK_1"  # Close-range 2-hit Iai combo
+    ATTACK_2 = "ATTACK_2"  # Mid-range Dash Slash
+    ATTACK_3 = "ATTACK_3"  # Ranged Dimension Wave + Judgment Cut AoE
     COOLDOWN = "COOLDOWN"
 
 
 class AttackPhase:
     NONE = "NONE"
-    WINDUP = "WINDUP"      # 前搖預警 (無 Hitbox)
-    ACTIVE = "ACTIVE"      # 攻擊判定 (生成 VFX 與 Hitbox)
-    RECOVERY = "RECOVERY"  # 後搖收招 (銷毀近戰 Hitbox)
+    WINDUP = "WINDUP"      # Telegraph phase (no Hitbox)
+    ACTIVE = "ACTIVE"      # Active frames (spawns VFX & Hitbox)
+    RECOVERY = "RECOVERY"  # Recovery phase (destroys melee Hitbox)
 
 
 class Vergil(pygame.sprite.Sprite):
-    def __init__(self, target_player, start_x=640, ground_y=GROUND_Y):
+    def __init__(self, target_player, start_x=640, ground_y=GROUND_Y, game_map=None):
         super().__init__()
 
         self.target = target_player
+        self.game_map = game_map
         self.max_health = 100
         self.boss_health = 100
-        self.boss_speed = 210.0  # px / s (對應原本 3.5 px/frame @ 60fps)
+        self.boss_speed = 215.0  # px / s
 
-        # 物理與座標
+        # Unified ground anchor (pos_x, pos_y) + Jump & One-Way Platform capabilities
+        self.spawn_x = float(start_x)
+        self.spawn_y = float(ground_y)
         self.pos_x = float(start_x)
         self.pos_y = float(ground_y)
         self.ground_y = ground_y
         self.velocity_y = 0.0
         self.gravity = GRAVITY
+        self.jump_speed = -635.0       # Negative upward jump velocity (~134px jump height)
+        self.jump_cooldown = 0.0       # Cooldown timer between Boss jumps
+        self.on_ground = False
+        self.on_one_way_platform = False
+        self.drop_through_timer = 0.0  # > 0 allows Boss to drop through one-way platforms to chase player below
         self.flip = True
 
-        # FSM 狀態機屬性
+        # FSM attributes
         self.state = BossState.IDLE
         self.attack_phase = AttackPhase.NONE
         self.state_timer = 0.0
         self.cooldown_duration = 0.55
 
-        # 各招式獨立冷卻時間 (秒)
+        # Per-skill cooldowns (seconds)
         self.skill_cooldowns = {
             BossState.ATTACK_1: 0.0,
             BossState.ATTACK_2: 0.0,
             BossState.ATTACK_3: 0.0,
         }
 
-        # 受擊閃白/閃紅與無敵間隔計時器 (以 dt 計時，受 time_scale 影響)
+        # Hit flash & invulnerability timers
         self.hit_flash_timer = 0.0
         self.hit_invuln_timer = 0.0
 
-        # 攻擊期間的輔助旗標
+        # Attack helper flags
         self.combo_step = 0
         self.dash_dir = -1
         self.dash_start_x = 0.0
         self.current_melee_hitbox = None
 
-        # 動畫設定
+        # Animation speeds
         self.animation_speed = {
             "idle": 0.10,
             "Run": 0.165,
             "Dash": 0.22,
             "Attack1": 0.14,
+        }
+
+        # Non-transparent pixel bounding box offsets
+        self.sprite_offsets = {
+            "idle": (9.5, 0.0),
+            "Run": (14.0, 9.0),
+            "Dash": (10.0, 1.0),
+            "Attack1": (1.0, 0.0),
         }
 
         self.animator = AnimatedSprite()
@@ -86,36 +102,88 @@ class Vergil(pygame.sprite.Sprite):
         self.animator.play("idle")
         self.image = self.animator.update_get_image(self.animation_speed["idle"])
 
-        # ---------- 分離碰撞框 ----------
-        # 1. 移動物理碰撞框 (Collision Box)
-        self.collision_rect = pygame.Rect(0, 0, 52, 98)
-        self.collision_rect.midbottom = (int(self.pos_x), int(self.pos_y))
-
-        # 2. 受擊框 (Hurtbox)
-        self.hurtbox = pygame.Rect(0, 0, 44, 92)
-        self.hurtbox.center = self.collision_rect.center
-        # 相容舊屬性名稱
+        # Separated Collision Box & Hurtbox
+        self.collision_rect = pygame.Rect(0, 0, 42, 104)
+        self.hurtbox = pygame.Rect(0, 0, 36, 98)
         self.hitbox = self.hurtbox
 
-        # 3. 繪製對齊框
-        self.rect = self.image.get_rect(midbottom=self.collision_rect.midbottom)
+        self.rect = self.image.get_rect()
+        self.sync_boxes()
+
+    @property
+    def facing_dir(self):
+        return -1 if self.flip else 1
+
+    def jump(self):
+        """
+        Boss Jump Mechanism:
+        When standing on ground and jump_cooldown <= 0, applies upward velocity self.jump_speed
+        and sets self.on_ground = False.
+        """
+        if self.on_ground and self.jump_cooldown <= 0.0:
+            self.velocity_y = self.jump_speed
+            self.on_ground = False
+            self.on_one_way_platform = False
+            self.jump_cooldown = 1.05
+            return True
+        return False
 
     def sync_boxes(self):
-        self.collision_rect.midbottom = (int(self.pos_x), int(self.pos_y))
-        self.hurtbox.center = self.collision_rect.center
+        anchor_x = int(round(self.pos_x))
+        anchor_y = int(round(self.pos_y))
+        f_dir = self.facing_dir
+
+        self.collision_rect.midbottom = (anchor_x, anchor_y)
+        self.hurtbox.midbottom = (anchor_x, anchor_y - 2)
         self.hitbox = self.hurtbox
-        self.rect = self.image.get_rect(midbottom=self.collision_rect.midbottom)
+
+        anim_state = self.animator.current_state or "idle"
+        body_dx, bottom_pad = self.sprite_offsets.get(anim_state, (0.0, 0.0))
+        self.rect = self.image.get_rect()
+        self.rect.centerx = int(round(self.pos_x - f_dir * body_dx))
+        self.rect.bottom = int(round(self.pos_y + bottom_pad))
 
     def _clear_melee_hitbox(self):
         if self.current_melee_hitbox is not None:
             self.current_melee_hitbox.destroy()
             self.current_melee_hitbox = None
 
+    def reset(self):
+        """
+        Soul-like Reset:
+        Restores Boss to full HP, initial spawn position, and IDLE state.
+        """
+        self._clear_melee_hitbox()
+        self.boss_health = self.max_health
+        self.pos_x = float(self.spawn_x)
+        self.pos_y = float(self.spawn_y)
+        self.velocity_y = 0.0
+        self.jump_cooldown = 0.0
+        self.drop_through_timer = 0.0
+        self.on_ground = False
+        self.on_one_way_platform = False
+        self.state = BossState.IDLE
+        self.attack_phase = AttackPhase.NONE
+        self.state_timer = 0.0
+        self.combo_step = 0
+        self.hit_flash_timer = 0.0
+        self.hit_invuln_timer = 0.0
+        for k in self.skill_cooldowns:
+            self.skill_cooldowns[k] = 0.0
+        self.animator.play("idle", force_reset=True)
+        self.image = self.animator.update_get_image(
+            self.animation_speed["idle"], dt_scale=0.0
+        )
+        self.face_target()
+        if self.flip:
+            self.image = pygame.transform.flip(
+                self.image, True, False
+            ).convert_alpha()
+        self.sync_boxes()
+
     def face_target(self):
         if self.target and self.target.alive():
-            self.flip = (
-                self.target.collision_rect.centerx < self.collision_rect.centerx
-            )
+            self.flip = self.target.pos_x < self.pos_x
 
     def change_state(self, new_state, cooldown_duration=0.55):
         self._clear_melee_hitbox()
@@ -133,7 +201,7 @@ class Vergil(pygame.sprite.Sprite):
             if new_state == BossState.ATTACK_1:
                 self.animator.play("Attack1", force_reset=True)
             elif new_state == BossState.ATTACK_2:
-                self.dash_dir = -1 if self.flip else 1
+                self.dash_dir = self.facing_dir
                 self.dash_start_x = self.pos_x
                 self.animator.play("Dash", force_reset=True)
             elif new_state == BossState.ATTACK_3:
@@ -150,15 +218,26 @@ class Vergil(pygame.sprite.Sprite):
 
     def decide_next_action(self, distance):
         """
-        根據與玩家的距離 (distance) 與各招式冷卻時間動態決定下一個狀態：
-        - 近距離 (<= 95px)：優先使用 ATTACK_1 (居合二連斬)
-        - 中距離 (95 ~ 280px)：優先使用 ATTACK_2 (疾風突進斬)
-        - 遠距離 (> 280px)：優先使用 ATTACK_3 (遠程劍氣波 + 次元斬領域)
-        - 若對應距離招式冷卻中，則進入 CHASE 追擊逼近玩家
+        Decide next FSM state based on horizontal & vertical distance to the player:
+        - If player is significantly higher or lower on a platform, prioritize CHASE (with jump / drop-through)
+          instead of whiffing ground melee attacks.
         """
+        vertical_diff = (
+            abs(self.target.pos_y - self.pos_y)
+            if (self.target and self.target.alive())
+            else 0.0
+        )
         cd1 = self.skill_cooldowns[BossState.ATTACK_1] <= 0.0
         cd2 = self.skill_cooldowns[BossState.ATTACK_2] <= 0.0
         cd3 = self.skill_cooldowns[BossState.ATTACK_3] <= 0.0
+
+        # If player is on a higher/lower platform (vertical difference > 65px), chase vertically first
+        if vertical_diff > 65.0:
+            if cd3 and distance >= 180.0:
+                self.change_state(BossState.ATTACK_3)
+                return
+            self.change_state(BossState.CHASE)
+            return
 
         if distance <= 95:
             if cd1:
@@ -184,21 +263,14 @@ class Vergil(pygame.sprite.Sprite):
                 self.change_state(BossState.ATTACK_2)
                 return
 
-        # 若無立即可放的招式或距離尚遠，進入 CHASE 追擊
-        if distance > 75:
+        if distance > 75 or vertical_diff > 30.0:
             self.change_state(BossState.CHASE)
         else:
             self.change_state(BossState.IDLE)
 
-    # ---------- 3 種攻擊狀態實作 (皆含 WINDUP -> ACTIVE -> RECOVERY) ----------
+    # ---------- 3 Attack States (WINDUP -> ACTIVE -> RECOVERY) ----------
 
     def _update_attack_1(self, dt, active_hitboxes, vfx_group):
-        """
-        ATTACK_1：近距離居合二連斬
-        - WINDUP (0.00 ~ 0.32s)：收刀蓄力閃光預警，無 Hitbox
-        - ACTIVE (0.32 ~ 0.68s)：第一斬 (0.32s) + 第二斬強化橫斬 (0.50s)，各自綁定 SlashVFX 與 Hitbox
-        - RECOVERY (0.68 ~ 0.98s)：銷毀近戰 Hitbox，收刀硬直後進入 COOLDOWN
-        """
         windup_end = 0.32
         slash2_time = 0.50
         active_end = 0.68
@@ -207,62 +279,56 @@ class Vergil(pygame.sprite.Sprite):
         if self.state_timer < windup_end:
             self.attack_phase = AttackPhase.WINDUP
             self.animator.play("Attack1")
-            # 前搖期間固定在第 0 幀蓄力姿勢
             self.animator.current_frames = 0.0
 
         elif self.state_timer < active_end:
             self.attack_phase = AttackPhase.ACTIVE
-            # 第一斬觸發
             if self.combo_step == 0:
                 self.combo_step = 1
                 self.face_target()
-                step_dir = -1 if self.flip else 1
-                self.pos_x += step_dir * 18.0
+                self.pos_x += self.facing_dir * 18.0
+                self.animator.current_frames = 1.0
                 self._spawn_melee_slash(
                     active_hitboxes,
                     vfx_group,
-                    width=105,
+                    forward_offset=42.0,
+                    vertical_offset=-50.0,
+                    width=96,
                     height=78,
                     damage=15,
                     duration=0.16,
                     color_outer=(50, 160, 255),
-                    tilt_angle=-12.0,
                 )
 
-            # 第二斬觸發
             elif self.combo_step == 1 and self.state_timer >= slash2_time:
                 self.combo_step = 2
                 self._clear_melee_hitbox()
                 self.face_target()
-                step_dir = -1 if self.flip else 1
-                self.pos_x += step_dir * 26.0
+                self.pos_x += self.facing_dir * 24.0
+                self.animator.current_frames = 2.0
                 self._spawn_melee_slash(
                     active_hitboxes,
                     vfx_group,
-                    width=125,
-                    height=88,
+                    forward_offset=48.0,
+                    vertical_offset=-52.0,
+                    width=112,
+                    height=86,
                     damage=20,
                     duration=0.17,
                     color_outer=(120, 90, 255),
-                    tilt_angle=14.0,
                 )
 
         elif self.state_timer < recovery_end:
             if self.attack_phase != AttackPhase.RECOVERY:
                 self.attack_phase = AttackPhase.RECOVERY
                 self._clear_melee_hitbox()
+                self.animator.current_frames = 3.0
         else:
             self._clear_melee_hitbox()
             self.skill_cooldowns[BossState.ATTACK_1] = 1.4
             self.change_state(BossState.COOLDOWN, cooldown_duration=0.55)
 
     def _update_attack_2(self, dt, active_hitboxes, vfx_group, map_width):
-        """
-        ATTACK_2：疾風突進斬 (Dash Slash)
-        - WINDUP (0.00 ~ 0.38s)：壓低身姿蓄力，顯示突進方向預警，無 Hitbox
-        - ACTIVE (0.38 ~ 0.64s)：高速向前突進，生成 DashSlashVFX 與隨身突進 Hitbox
-        - RECOVERY (0.64 ~ 1.00s)：停止突進並立即銷毀 Hitbox，進入後搖
-        """
         windup_end = 0.38
         active_end = 0.64
         recovery_end = 1.00
@@ -271,7 +337,7 @@ class Vergil(pygame.sprite.Sprite):
         if self.state_timer < windup_end:
             self.attack_phase = AttackPhase.WINDUP
             self.face_target()
-            self.dash_dir = -1 if self.flip else 1
+            self.dash_dir = self.facing_dir
             self.dash_start_x = self.pos_x
             self.animator.play("Dash")
             self.animator.current_frames = 0.0
@@ -280,14 +346,15 @@ class Vergil(pygame.sprite.Sprite):
             self.attack_phase = AttackPhase.ACTIVE
             if self.combo_step == 0:
                 self.combo_step = 1
+                hb_w, hb_h = 116, 72
+                hb_cx = int(round(self.pos_x + self.dash_dir * 28.0))
+                hb_cy = int(round(self.pos_y - 50.0))
+                hb_rect = pygame.Rect(0, 0, hb_w, hb_h)
+                hb_rect.center = (hb_cx, hb_cy)
+
                 hb = Hitbox(
                     owner="boss",
-                    rect=pygame.Rect(
-                        int(self.pos_x - 60),
-                        int(self.collision_rect.centery - 38),
-                        120,
-                        76,
-                    ),
+                    rect=hb_rect,
                     damage=22,
                     knockback_x=self.dash_dir * 300.0,
                     lifetime=active_end - windup_end,
@@ -302,16 +369,16 @@ class Vergil(pygame.sprite.Sprite):
                         DashSlashVFX(
                             anchor_entity=self,
                             start_x=self.dash_start_x,
-                            y=self.collision_rect.centery,
-                            width=160,
-                            height=76,
+                            vertical_offset=-50.0,
+                            forward_offset=28.0,
+                            hitbox_w=hb_w,
+                            hitbox_h=hb_h,
                             flip=self.flip,
                             duration=active_end - windup_end,
                             hitbox=hb,
                         )
                     )
 
-            # 執行高速突進位移
             self.pos_x += self.dash_dir * dash_speed * dt
             self.pos_x = max(40.0, min(float(map_width - 40), self.pos_x))
 
@@ -327,12 +394,6 @@ class Vergil(pygame.sprite.Sprite):
             self.change_state(BossState.COOLDOWN, cooldown_duration=0.65)
 
     def _update_attack_3(self, dt, active_hitboxes, vfx_group):
-        """
-        ATTACK_3：次元劍氣波 + 遠程次元斬領域 (Ranged Wave + AoE Judgment Cut)
-        - WINDUP (0.00 ~ 0.42s)：凝聚紫藍色次元能量預警，無 Hitbox
-        - ACTIVE (0.42 ~ 0.72s)：發射飛行劍氣波 ProjectileWaveVFX，同時於玩家位置召喚 GroundShockwaveVFX
-        - RECOVERY (0.72 ~ 1.10s)：收刀後搖，等待下一次行動
-        """
         windup_end = 0.42
         active_end = 0.72
         recovery_end = 1.10
@@ -347,18 +408,21 @@ class Vergil(pygame.sprite.Sprite):
             self.attack_phase = AttackPhase.ACTIVE
             if self.combo_step == 0:
                 self.combo_step = 1
-                direction = -1 if self.flip else 1
-                spawn_x = self.collision_rect.centerx + direction * 46
-                spawn_y = self.collision_rect.centery - 4
+                direction = self.facing_dir
+                spawn_x = self.pos_x + direction * 44.0
+                spawn_y = self.pos_y - 50.0
+                self.animator.current_frames = 2.0
 
-                # 1. 發射遠程飛行劍氣波 (掛載隨行 Hitbox)
+                wave_w, wave_h = 56, 92
+                hb_rect = pygame.Rect(0, 0, wave_w - 8, wave_h - 10)
+                hb_rect.center = (int(round(spawn_x)), int(round(spawn_y)))
                 wave_hb = Hitbox(
                     owner="boss",
-                    rect=pygame.Rect(int(spawn_x - 24), int(spawn_y - 42), 48, 84),
+                    rect=hb_rect,
                     damage=18,
                     knockback_x=direction * 240.0,
                     lifetime=1.35,
-                    tag="projectile",
+                    tag="boss_projectile",
                 )
                 if active_hitboxes is not None:
                     active_hitboxes.append(wave_hb)
@@ -369,19 +433,19 @@ class Vergil(pygame.sprite.Sprite):
                         y=spawn_y,
                         direction=direction,
                         speed=540.0,
-                        width=58,
-                        height=96,
+                        width=wave_w,
+                        height=wave_h,
                         duration=1.35,
                         hitbox=wave_hb,
                     )
                     vfx_group.add(wave_vfx)
 
-                    # 2. 在玩家當前位置召喚延遲爆發的次元斬領域 (含預警圈與動態 Hitbox)
                     if self.target and self.target.alive():
+                        target_ground_y = int(round(self.target.pos_y))
                         aoe_vfx = GroundShockwaveVFX(
-                            target_x=self.target.collision_rect.centerx,
-                            ground_y=self.ground_y,
-                            radius=66,
+                            target_x=self.target.pos_x,
+                            ground_y=target_ground_y,
+                            radius=64,
                             windup_time=0.45,
                             active_time=0.26,
                             recovery_time=0.18,
@@ -392,6 +456,7 @@ class Vergil(pygame.sprite.Sprite):
 
         elif self.state_timer < recovery_end:
             self.attack_phase = AttackPhase.RECOVERY
+            self.animator.current_frames = 3.0
         else:
             self.skill_cooldowns[BossState.ATTACK_3] = 3.2
             self.change_state(BossState.COOLDOWN, cooldown_duration=0.75)
@@ -400,20 +465,20 @@ class Vergil(pygame.sprite.Sprite):
         self,
         active_hitboxes,
         vfx_group,
-        width=105,
+        forward_offset=44.0,
+        vertical_offset=-52.0,
+        width=96,
         height=78,
         damage=15,
         duration=0.16,
         color_outer=(50, 160, 255),
-        tilt_angle=0.0,
     ):
-        offset_x = -52 if self.flip else 52
-        hb_rect = pygame.Rect(0, 0, width - 12, height - 10)
-        hb_rect.center = (
-            int(self.collision_rect.centerx + offset_x),
-            int(self.collision_rect.centery - 4),
-        )
-        kb = -240.0 if self.flip else 240.0
+        cx = int(round(self.pos_x + self.facing_dir * forward_offset))
+        cy = int(round(self.pos_y + vertical_offset))
+        hb_rect = pygame.Rect(0, 0, width - 8, height - 8)
+        hb_rect.center = (cx, cy)
+
+        kb = self.facing_dir * 240.0
         hb = Hitbox(
             owner="boss",
             rect=hb_rect,
@@ -429,33 +494,27 @@ class Vergil(pygame.sprite.Sprite):
         if vfx_group is not None:
             slash_vfx = SlashVFX(
                 anchor_entity=self,
-                offset_x=offset_x,
-                offset_y=-4,
+                forward_offset=forward_offset,
+                vertical_offset=vertical_offset,
                 width=width,
                 height=height,
                 flip=self.flip,
                 duration=duration,
                 color_outer=color_outer,
                 color_inner=(230, 250, 255),
-                tilt_angle=tilt_angle,
                 hitbox=hb,
             )
             vfx_group.add(slash_vfx)
 
     def on_parried(self):
-        """
-        當玩家對 Boss 的近戰/突進攻擊觸發『完美格擋』時：
-        立即清除當前近戰 Hitbox，並使 Boss 進入短暫反擊破綻 (RECOVERY)，方便玩家於子彈時間內反擊。
-        """
         self._clear_melee_hitbox()
         if self.state in (BossState.ATTACK_1, BossState.ATTACK_2):
             self.attack_phase = AttackPhase.RECOVERY
             self.state_timer = 0.68
 
     def be_attacked(self, damage=12):
-        """受到玩家攻擊扣血"""
         if self.hit_invuln_timer <= 0.0 and self.boss_health > 0:
-            self.boss_health = max(0, self.boss_health - damage)
+            self.boss_health = max(0, round(self.boss_health - damage, 2))
             self.hit_flash_timer = 0.25
             self.hit_invuln_timer = 0.18
             if self.boss_health <= 0:
@@ -463,25 +522,28 @@ class Vergil(pygame.sprite.Sprite):
                 self.kill()
 
     def update(self, dt=1 / 60, active_hitboxes=None, vfx_group=None, map_width=1600):
-        # 1. 更新所有計時器 (全部乘上已含 time_scale 的 dt)
+        # 1. Update timers
         self.state_timer += dt
         if self.hit_flash_timer > 0.0:
             self.hit_flash_timer = max(0.0, self.hit_flash_timer - dt)
         if self.hit_invuln_timer > 0.0:
             self.hit_invuln_timer = max(0.0, self.hit_invuln_timer - dt)
+        if self.jump_cooldown > 0.0:
+            self.jump_cooldown = max(0.0, self.jump_cooldown - dt)
+        if self.drop_through_timer > 0.0:
+            self.drop_through_timer = max(0.0, self.drop_through_timer - dt)
 
         for k in self.skill_cooldowns:
             if self.skill_cooldowns[k] > 0.0:
                 self.skill_cooldowns[k] = max(0.0, self.skill_cooldowns[k] - dt)
 
-        player_x = (
-            self.target.collision_rect.centerx
-            if (self.target and self.target.alive())
-            else self.pos_x
-        )
+        has_target = bool(self.target and self.target.alive())
+        player_x = self.target.pos_x if has_target else self.pos_x
         distance = abs(self.pos_x - player_x)
 
-        # 2. FSM 狀態行為更新
+        old_pos_x = self.pos_x
+
+        # 2. FSM State Behavior & Vertical Chase AI
         if self.state == BossState.COOLDOWN:
             if self.state_timer >= self.cooldown_duration:
                 self.change_state(BossState.IDLE)
@@ -496,6 +558,44 @@ class Vergil(pygame.sprite.Sprite):
             move_dir = -1 if self.pos_x > player_x else 1
             self.pos_x += move_dir * self.boss_speed * dt
             self.pos_x = max(40.0, min(float(map_width - 40), self.pos_x))
+
+            # AI Jump & Platform Chase Conditions:
+            if has_target and self.on_ground:
+                player_hb = getattr(
+                    self.target, "collision_rect", self.target.hurtbox
+                )
+                # (a) Elevation Chase: Player is significantly higher than Boss
+                if (
+                    player_hb.bottom < self.collision_rect.top - 20
+                    and distance <= 340.0
+                    and self.jump_cooldown <= 0.0
+                ):
+                    self.jump()
+
+                # (b) Drop-Through Chase: Boss is on a one-way platform and Player is below
+                elif (
+                    self.on_one_way_platform
+                    and player_hb.top > self.collision_rect.bottom + 16
+                    and distance <= 320.0
+                ):
+                    self.drop_through_timer = 0.25
+                    self.on_ground = False
+                    self.on_one_way_platform = False
+                    self.velocity_y = 140.0
+                    self.pos_y += 3.0
+
+                # (c) Gap Ahead Detection: Jump across floor gaps while chasing
+                elif (
+                    self.jump_cooldown <= 0.0
+                    and distance > 85.0
+                    and self.game_map is not None
+                    and hasattr(self.game_map, "has_ground_ahead")
+                ):
+                    if not self.game_map.has_ground_ahead(
+                        self.collision_rect, move_dir
+                    ):
+                        self.jump()
+
             self.decide_next_action(distance)
 
         elif self.state == BossState.ATTACK_1:
@@ -507,19 +607,74 @@ class Vergil(pygame.sprite.Sprite):
         elif self.state == BossState.ATTACK_3:
             self._update_attack_3(dt, active_hitboxes, vfx_group)
 
-        # 3. 地面重力對齊
-        if self.pos_y < self.ground_y:
-            self.velocity_y += self.gravity * dt
-            self.pos_y = min(float(self.ground_y), self.pos_y + self.velocity_y * dt)
-        else:
-            self.pos_y = float(self.ground_y)
-            self.velocity_y = 0.0
+        # 3. Unconditional Per-Frame Gravity & Map Collision Resolution
+        intended_dx = self.pos_x - old_pos_x
+        self.velocity_y = min(self.velocity_y + self.gravity * dt, 950.0)
+        dy = self.velocity_y * dt
 
-        # 4. 動畫幀率更新 (乘上 dt_scale = dt * 60，在子彈時間下自動慢動作)
+        has_map_geometry = bool(
+            self.game_map
+            and (
+                getattr(self.game_map, "collisions", None)
+                or getattr(self.game_map, "polygons", None)
+                or getattr(self.game_map, "platforms", None)
+            )
+        )
+
+        if has_map_geometry:
+            self.collision_rect.midbottom = (round(old_pos_x), round(self.pos_y))
+            on_ground_now, hit_ceiling = self.game_map.move_with_collisions(
+                self.collision_rect,
+                intended_dx,
+                dy,
+                drop_through=(self.drop_through_timer > 0.0),
+            )
+            self.on_one_way_platform = bool(
+                getattr(self.game_map, "last_on_one_way", False)
+            )
+
+            if self.collision_rect.left < 40:
+                self.collision_rect.left = 40
+            elif self.collision_rect.right > map_width - 40:
+                self.collision_rect.right = map_width - 40
+
+            actual_dx = self.collision_rect.centerx - round(old_pos_x)
+            self.pos_x = float(self.collision_rect.centerx)
+            self.pos_y = float(self.collision_rect.bottom)
+
+            if on_ground_now and self.velocity_y >= 0.0:
+                self.velocity_y = 0.0
+                self.on_ground = True
+                self.ground_y = self.pos_y
+            else:
+                self.on_ground = on_ground_now
+                if hit_ceiling and self.velocity_y < 0.0:
+                    self.velocity_y = 0.0
+
+            # (d) Obstacle Vaulting: If blocked horizontally by a wall/step while chasing on ground, jump over it!
+            if (
+                self.state == BossState.CHASE
+                and self.on_ground
+                and self.jump_cooldown <= 0.0
+                and abs(intended_dx) > 0.8
+                and abs(actual_dx) < abs(intended_dx) * 0.25
+            ):
+                self.jump()
+        else:
+            self.pos_x = max(40.0, min(float(map_width - 40), self.pos_x))
+            self.pos_y += dy
+            self.on_one_way_platform = False
+            if self.pos_y >= self.ground_y:
+                self.pos_y = float(self.ground_y)
+                self.velocity_y = 0.0
+                self.on_ground = True
+            else:
+                self.on_ground = False
+
+        # 4. Animation Frame Update
         anim_state = self.animator.current_state or "idle"
         current_fspeed = self.animation_speed.get(anim_state, 0.12)
         dt_scale = dt * 60.0
-        # 前搖期間固定蓄力姿勢，進入 ACTIVE 後才推進攻擊動畫幀
         if self.attack_phase == AttackPhase.WINDUP:
             dt_scale = 0.0
 
@@ -528,17 +683,22 @@ class Vergil(pygame.sprite.Sprite):
         if self.flip:
             self.image = pygame.transform.flip(self.image, True, False).convert_alpha()
 
-        # 5. 視覺特效疊加：前搖預警光效 & 受擊閃紅
+        # 5. Visual overlays (Wind-up telegraph & hit flash)
         if self.attack_phase == AttackPhase.WINDUP:
-            # 前搖預警閃光：提醒玩家準備按格擋
             pulse = int(abs(math.sin(self.state_timer * 22.0)) * 110)
             self.image = self.image.copy()
             if self.state == BossState.ATTACK_2:
-                self.image.fill((pulse, int(pulse * 0.4), 0), special_flags=pygame.BLEND_RGB_ADD)
+                self.image.fill(
+                    (pulse, int(pulse * 0.4), 0), special_flags=pygame.BLEND_RGB_ADD
+                )
             elif self.state == BossState.ATTACK_3:
-                self.image.fill((int(pulse * 0.6), 0, pulse), special_flags=pygame.BLEND_RGB_ADD)
+                self.image.fill(
+                    (int(pulse * 0.6), 0, pulse), special_flags=pygame.BLEND_RGB_ADD
+                )
             else:
-                self.image.fill((0, int(pulse * 0.7), pulse), special_flags=pygame.BLEND_RGB_ADD)
+                self.image.fill(
+                    (0, int(pulse * 0.7), pulse), special_flags=pygame.BLEND_RGB_ADD
+                )
 
         if self.hit_flash_timer > 0.0:
             if int(self.hit_flash_timer * 25) % 2 == 0:

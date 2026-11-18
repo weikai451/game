@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="160" height="48" tilewidth="16" tileheight="16" infinite="0" nextlayerid="6" nextobjectid="35">
+ <imagelayer id="2" name="bg1" offsetx="0" offsety="0">
+  <image source="../Background/tutorial .jpg" width="1376" height="768"/>
+ </imagelayer>
+ <imagelayer id="5" name="bg2" offsetx="1376" offsety="0">
+  <image source="../Background/tutorial .jpg" width="1376" height="768"/>
+ </imagelayer>
+ <objectgroup id="3" name="Collisions">
+  <!-- Solid Left & Right World Boundaries -->
+  <object id="1" x="-32" y="0" width="48" height="768"/>
+  <object id="2" x="2512" y="0" width="64" height="768"/>
+
+  <!-- Stage 1: Movement, Fixed Jump & Two-Way Pass-Through Platforms -->
+  <object id="3" x="0" y="640" width="272" height="128"/>
+  <object id="4" x="272" y="704" width="240" height="64"/>
+  <!-- One-Way Platform 1 (y=560, 80px above ground) -->
+  <object id="5" x="144" y="560" width="128" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+  <!-- One-Way Platform 2 over the gap (y=576, 64px above ground) -->
+  <object id="9" x="328" y="576" width="144" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+
+  <!-- Stage 2: Basic Attack Solid Ground (x=512..1040, y=640) -->
+  <object id="6" x="512" y="640" width="528" height="128"/>
+
+  <!-- Stage 3: Pogo Pit Solid Bottom Floor (x=1040..1376, y=720) -->
+  <object id="7" x="1040" y="720" width="336" height="48"/>
+
+  <!-- Stage 3 Landing -> Stage 4 Parry -> Stage 5 Checkpoint & Portal Solid Ledge (x=1376..2528, y=544) -->
+  <object id="8" x="1376" y="544" width="1152" height="224"/>
+  <!-- Optional One-Way Battle Platform in Stage 4 (y=448, 96px above Stage 4 floor) -->
+  <object id="10" x="1580" y="448" width="144" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+
+  <!-- End Portal to Main World -->
+  <object id="16" x="2340" y="400" width="80" height="144">
+   <properties>
+    <property name="spawn_x" type="int" value="140"/>
+    <property name="spawn_y" type="int" value="640"/>
+    <property name="target" value="main_world.tmx"/>
+   </properties>
+  </object>
+ </objectgroup>
+ <objectgroup id="4" name="checkpoints">
+  <object id="20" x="2128" y="448" width="56" height="96">
+   <properties>
+    <property name="order" type="int" value="1"/>
+   </properties>
+  </object>
+ </objectgroup>
+</map>
