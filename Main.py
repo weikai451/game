@@ -28,7 +28,7 @@ from checkpoint import load_checkpoints
 from menu import Menu
 from tutorial_system import GuidedTutorialManager
 import Player
-import Boss1
+from bosses import Sans, Vergil
 from VFX import draw_debug_boxes, HealVFX, PortalTeleportVFX
 
 
@@ -244,11 +244,11 @@ class Game:
             )
         return triggers
 
-    def spawn_boss(self, floor_y=None, start_x=380):
-        """Spawn Boss with full map collision & gravity binding"""
+    def spawn_boss(self, boss_cls=Sans, floor_y=None, start_x=380):
+        """Spawn the specified Boss class (Sans for Level 1, Vergil for Level 2) with map collision binding."""
         if floor_y is None:
             floor_y = self.get_floor_y_at(start_x, default=640)
-        self.boss = Boss1.Vergil(
+        self.boss = boss_cls(
             self.player,
             start_x=start_x,
             ground_y=floor_y,
@@ -275,24 +275,32 @@ class Game:
             px = getattr(self.player, "pos_x", 260.0)
             boss_x = min(float(self.game_map.width - 260), px + 420.0)
             floor_y = self.get_floor_y_at(boss_x, default=656)
-            if self.boss is not None and self.boss.alive():
+            if (
+                self.boss is not None
+                and isinstance(self.boss, Vergil)
+                and self.boss.alive()
+            ):
                 self.boss.game_map = self.game_map
                 self.boss.spawn_x = float(boss_x)
                 self.boss.spawn_y = float(floor_y)
                 self.boss.reset()
             else:
-                self.spawn_boss(floor_y=floor_y, start_x=boss_x)
+                self.spawn_boss(boss_cls=Vergil, floor_y=floor_y, start_x=boss_x)
         elif self.is_main_world():
             self.main_boss_defeated = False
             boss_x = 380.0
             floor_y = self.get_floor_y_at(boss_x, default=640)
-            if self.boss is not None and self.boss.alive():
+            if (
+                self.boss is not None
+                and isinstance(self.boss, Sans)
+                and self.boss.alive()
+            ):
                 self.boss.game_map = self.game_map
                 self.boss.spawn_x = float(boss_x)
                 self.boss.spawn_y = float(floor_y)
                 self.boss.reset()
             else:
-                self.spawn_boss(floor_y=floor_y, start_x=boss_x)
+                self.spawn_boss(boss_cls=Sans, floor_y=floor_y, start_x=boss_x)
 
         if self.hud is not None and self.boss is not None:
             self.hud.boss = self.boss
@@ -325,14 +333,16 @@ class Game:
             self.all_sprites = pygame.sprite.Group(self.player)
             self.tutorial_manager = GuidedTutorialManager(self)
         elif self.is_boss_arena():
+            # Level 2 Boss Arena: Spawn VERGIL
             px = getattr(self.player, "pos_x", 260.0)
             boss_x = min(float(self.game_map.width - 260), px + 420.0)
             floor_y = self.get_floor_y_at(boss_x, default=656)
-            self.spawn_boss(floor_y=floor_y, start_x=boss_x)
+            self.spawn_boss(boss_cls=Vergil, floor_y=floor_y, start_x=boss_x)
         elif self.is_main_world() and not self.main_boss_defeated:
+            # Level 1 Main World: Spawn SANS
             boss_x = 380.0
             floor_y = self.get_floor_y_at(boss_x, default=640)
-            self.spawn_boss(floor_y=floor_y, start_x=boss_x)
+            self.spawn_boss(boss_cls=Sans, floor_y=floor_y, start_x=boss_x)
         else:
             self.boss = None
             self.enemies = pygame.sprite.Group()
@@ -827,11 +837,31 @@ class Game:
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
                     self.state = State.MENU
 
+    def get_all_active_hitboxes(self):
+        """
+        Collect all active hitboxes from the shared list AND the current Boss's
+        unified `get_active_hitboxes()` interface (deduplicated by object identity).
+        """
+        combined = []
+        seen = set()
+        for hb in self.active_hitboxes:
+            if hb.active and id(hb) not in seen:
+                seen.add(id(hb))
+                combined.append(hb)
+        if self.boss is not None and hasattr(self.boss, "get_active_hitboxes"):
+            for hb in self.boss.get_active_hitboxes():
+                if hb.active and id(hb) not in seen:
+                    seen.add(id(hb))
+                    combined.append(hb)
+        return combined
+
     def resolve_combat_collisions(self):
         """Resolve active Hitbox collisions against Hurtboxes and ParryBoxes"""
-        self.active_hitboxes = [hb for hb in self.active_hitboxes if hb.active]
+        # Filter in-place so delayed projectile VFX holding a reference to
+        # `self.active_hitboxes` never append to an orphaned list!
+        self.active_hitboxes[:] = [hb for hb in self.active_hitboxes if hb.active]
 
-        for hb in self.active_hitboxes:
+        for hb in self.get_all_active_hitboxes():
             if not hb.active:
                 continue
 
@@ -1094,7 +1124,7 @@ class Game:
                     self.camera_y,
                     self.player,
                     self.boss,
-                    self.active_hitboxes,
+                    self.get_all_active_hitboxes(),
                     self.vfx_group,
                 )
                 for trigger in self.triggers:
@@ -1147,13 +1177,30 @@ class Game:
                 and self.boss is not None
                 and not self.boss.alive()
             ):
-                self.hud.draw_text(
-                    self.screen,
-                    "VICTORY! BOSS DEFEATED",
-                    self.hud.font_big,
-                    (255, 215, 80),
-                    (WIDTH // 2, HEIGHT // 2 - 40),
-                )
+                boss_label = getattr(self.boss, "boss_name", "BOSS")
+                if self.is_main_world():
+                    self.hud.draw_text(
+                        self.screen,
+                        f"LEVEL 1 CLEAR! {boss_label} DEFEATED",
+                        self.hud.font_big,
+                        (255, 215, 80),
+                        (WIDTH // 2, HEIGHT // 2 - 48),
+                    )
+                    self.hud.draw_text(
+                        self.screen,
+                        "Enter the Portal to challenge VERGIL in Level 2",
+                        self.hud.font_small,
+                        (180, 235, 255),
+                        (WIDTH // 2, HEIGHT // 2 + 12),
+                    )
+                else:
+                    self.hud.draw_text(
+                        self.screen,
+                        f"VICTORY! {boss_label} DEFEATED",
+                        self.hud.font_big,
+                        (255, 215, 80),
+                        (WIDTH // 2, HEIGHT // 2 - 40),
+                    )
 
             if self.state == State.PAUSED:
                 self.screen.blit(self.pause_overlay, (0, 0))

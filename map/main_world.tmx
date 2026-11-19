@@ -18,84 +18,49 @@
  <imagelayer id="18" name="f4" offsetx="2976" offsety="592">
   <image source="../Background/floor 3.png" width="479" height="150"/>
  </imagelayer>
- <imagelayer id="14" name="step1" offsetx="1312" offsety="464">
-  <image source="../Background/floor7.png" width="74" height="36"/>
- </imagelayer>
- <imagelayer id="15" name="step2" offsetx="1408" offsety="400">
-  <image source="../Background/floor7.png" width="74" height="36"/>
- </imagelayer>
- <imagelayer id="16" name="step3" offsetx="1504" offsety="352">
-  <image source="../Background/floor7.png" width="74" height="36"/>
- </imagelayer>
  <objectgroup id="3" name="Collisions">
   <!-- Solid Left & Right World Boundaries -->
   <object id="1" x="-32" y="0" width="48" height="800"/>
   <object id="2" x="3456" y="0" width="64" height="800"/>
 
-  <!-- Continuous Solid Ground Floors (no bottomless pits that trap or drop out of world) -->
+  <!-- Continuous Solid Ground Floors -->
   <object id="12" x="0" y="640" width="1856" height="96"/>
   <object id="23" x="1856" y="656" width="304" height="96"/>
   <object id="24" x="2160" y="688" width="832" height="96"/>
   <object id="33" x="2992" y="672" width="480" height="96"/>
 
-  <!-- Gentle Solid Slope in Zone 1 -->
-  <object id="14" x="912" y="640">
-   <polygon points="0,0 32,-16 416,-16 448,0"/>
+  <!-- Pre-drawn Stone Bridges in floor1.png (invisible_art=true so no stray box is drawn over art) -->
+  <object id="9" x="672" y="560" width="160" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+    <property name="invisible_art" type="bool" value="true"/>
+   </properties>
+  </object>
+  <object id="7" x="832" y="496" width="368" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+    <property name="invisible_art" type="bool" value="true"/>
+   </properties>
   </object>
 
-  <!-- One-Way / Drop-Through Platforms (all spaced within 64~96px jump reach!) -->
-  <object id="8" x="260" y="544" width="160" height="16">
+  <!-- Cohesive One-Way / Drop-Through Stone Platforms on Right Half (88~96px jump reach) -->
+  <object id="19" x="1568" y="544" width="192" height="16">
    <properties>
     <property name="one_way" type="bool" value="true"/>
    </properties>
   </object>
-  <object id="9" x="608" y="552" width="192" height="16">
+  <object id="30" x="1920" y="552" width="192" height="16">
    <properties>
     <property name="one_way" type="bool" value="true"/>
    </properties>
   </object>
-  <object id="7" x="832" y="488" width="368" height="16">
-   <properties>
-    <property name="one_way" type="bool" value="true"/>
-   </properties>
-  </object>
-  <object id="17" x="1216" y="544" width="96" height="16">
-   <properties>
-    <property name="one_way" type="bool" value="true"/>
-   </properties>
-  </object>
-  <object id="26" x="1312" y="464" width="80" height="16">
-   <properties>
-    <property name="one_way" type="bool" value="true"/>
-   </properties>
-  </object>
-  <object id="27" x="1408" y="400" width="80" height="16">
-   <properties>
-    <property name="one_way" type="bool" value="true"/>
-   </properties>
-  </object>
-  <object id="28" x="1504" y="352" width="256" height="16">
-   <properties>
-    <property name="one_way" type="bool" value="true"/>
-   </properties>
-  </object>
-  <object id="19" x="1600" y="552" width="176" height="16">
-   <properties>
-    <property name="one_way" type="bool" value="true"/>
-   </properties>
-  </object>
-  <object id="30" x="1904" y="560" width="208" height="16">
-   <properties>
-    <property name="one_way" type="bool" value="true"/>
-   </properties>
-  </object>
-  <object id="25" x="2304" y="592" width="160" height="16">
+  <object id="25" x="2272" y="584" width="192" height="16">
    <properties>
     <property name="one_way" type="bool" value="true"/>
    </properties>
   </object>
 
-  <!-- Portal to Boss 1 Arena -->
+  <!-- Portal to Boss 1 Arena (Sans) -->
   <object id="20" x="2560" y="480" width="128" height="208">
    <properties>
     <property name="spawn_x" type="int" value="280"/>
@@ -105,7 +70,7 @@
   </object>
  </objectgroup>
  <objectgroup id="8" name="checkpoints">
-  <object id="40" x="1160" y="528" width="56" height="96">
+  <object id="40" x="1160" y="544" width="56" height="96">
    <properties>
     <property name="order" type="int" value="1"/>
    </properties>

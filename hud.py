@@ -196,7 +196,8 @@ class HUD:
             if abs(cur_hp - round(cur_hp)) > 0.05
             else f"{int(round(cur_hp))}"
         )
-        hp_label = f"VERGIL: {hp_val_str} / {max_hp} ({int(cur_ratio * 100)}%)"
+        boss_name = getattr(self.boss, "boss_name", "SANS")
+        hp_label = f"{boss_name}: {hp_val_str} / {max_hp} ({int(cur_ratio * 100)}%)"
         self.draw_text(
             screen, hp_label, self.font_hud, (255, 255, 255), (WIDTH // 2, y + bar_h // 2)
         )

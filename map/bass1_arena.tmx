@@ -12,18 +12,12 @@
   <object id="3" x="64" y="656" width="1248" height="112"/>
 
   <!-- Symmetrical One-Way / Drop-Through Battle Platforms (y=552, 104px above floor) -->
-  <object id="4" x="240" y="552" width="208" height="16">
+  <object id="4" x="240" y="552" width="224" height="16">
    <properties>
     <property name="one_way" type="bool" value="true"/>
    </properties>
   </object>
-  <object id="5" x="928" y="552" width="208" height="16">
-   <properties>
-    <property name="one_way" type="bool" value="true"/>
-   </properties>
-  </object>
-  <!-- Center High One-Way Platform (y=456, 96px above side platforms) -->
-  <object id="6" x="560" y="456" width="256" height="16">
+  <object id="5" x="912" y="552" width="224" height="16">
    <properties>
     <property name="one_way" type="bool" value="true"/>
    </properties>

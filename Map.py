@@ -21,6 +21,7 @@ class GameMap:
         self.collisions = []
         self.collision_rects = self.collisions
         self.platforms = []
+        self.visible_platforms = []
         self.polygons = []
         self.polygon_bboxes = []
         self.portals = []
@@ -108,6 +109,13 @@ class GameMap:
                     ) or bool(props.get("one_way", False))
                     if is_one_way:
                         self.platforms.append(rect)
+                        invisible_art = str(props.get("invisible_art", "")).lower() in (
+                            "true",
+                            "1",
+                            "yes",
+                        ) or bool(props.get("invisible_art", False))
+                        if not invisible_art:
+                            self.visible_platforms.append(rect)
                     else:
                         self.collisions.append(rect)
 
@@ -147,23 +155,32 @@ class GameMap:
                         continue
                     screen.blit(image, (screen_x, screen_y))
 
-        # 2. Render visual pixel-art platform planks for One-Way Platforms inside camera viewport
-        for plat in self.platforms:
+        # 2. Render 3-part pixel-art stone platforms (left end-cap, tiled middle bricks, right end-cap)
+        for plat in self.visible_platforms:
             sr = plat.move(-camera_x, -camera_y)
             if sr.right < 0 or sr.left > sw or sr.bottom < 0 or sr.top > sh:
                 continue
-            vis_h = min(14, max(8, sr.height))
+            vis_h = 16
             body_rect = pygame.Rect(sr.x, sr.y, sr.width, vis_h)
-            pygame.draw.rect(screen, (52, 60, 82), body_rect, border_radius=2)
+            # Base stone body
+            pygame.draw.rect(screen, (62, 58, 72), body_rect)
+            # Top sandstone/cyan highlight ledge
+            pygame.draw.rect(screen, (148, 138, 128), (sr.x + 2, sr.y + 2, sr.width - 4, 4))
+            pygame.draw.rect(screen, (95, 190, 235), (sr.x + 2, sr.y, sr.width - 4, 2))
+            # Bottom shadow rim
+            pygame.draw.rect(screen, (32, 30, 42), (sr.x, sr.y + vis_h - 3, sr.width, 3))
+            # Left & Right stone end-caps
+            pygame.draw.rect(screen, (84, 78, 94), (sr.x, sr.y + 2, 10, vis_h - 4))
             pygame.draw.rect(
-                screen, (110, 195, 240), (sr.x, sr.y, sr.width, 4), border_radius=2
+                screen, (84, 78, 94), (sr.right - 10, sr.y + 2, 10, vis_h - 4)
             )
-            pygame.draw.rect(screen, (28, 34, 48), body_rect, 2, border_radius=2)
-            # Subtle rivets/plank joints every 32px
-            for rx in range(sr.x + 16, sr.right - 8, 32):
+            # Tiled middle brick seams
+            for bx in range(sr.x + 16, sr.right - 10, 20):
                 pygame.draw.line(
-                    screen, (35, 42, 58), (rx, sr.y + 4), (rx, sr.y + vis_h - 2), 2
+                    screen, (38, 36, 48), (bx, sr.y + 4), (bx, sr.y + vis_h - 3), 2
                 )
+            # Crisp dark pixel outer border
+            pygame.draw.rect(screen, (22, 20, 30), body_rect, 2)
 
     def move_with_collisions(self, entity_rect, dx, dy, drop_through=False):
         return self.collision_system.move_with_collisions(

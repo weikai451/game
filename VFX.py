@@ -1,4 +1,5 @@
 import math
+import os
 import random
 import pygame
 from Settings import (
@@ -1283,3 +1284,357 @@ def draw_debug_boxes(
                 COLOR_DEBUG_HITBOX,
                 radius=4,
             )
+
+
+# =============================================================================
+# Undertale-Style Sans Attack VFX (Bone Wave, Homing Bone, Gaster Blaster)
+# =============================================================================
+
+_SANS_ASSET_CACHE = {}
+
+
+def _load_sans_asset(filename):
+    """Load and cache transparent RGBA pixel-art assets from assets/sprites/sans/"""
+    if filename in _SANS_ASSET_CACHE:
+        return _SANS_ASSET_CACHE[filename]
+    path = os.path.join("assets", "sprites", "sans", filename)
+    if os.path.exists(path):
+        surf = pygame.image.load(path).convert_alpha()
+    else:
+        surf = pygame.Surface((24, 64), pygame.SRCALPHA)
+        pygame.draw.rect(surf, (245, 248, 255), (6, 4, 12, 56))
+    _SANS_ASSET_CACHE[filename] = surf
+    return surf
+
+
+class BoneWaveVFX(BaseVFX):
+    """
+    Sans Attack 1 — Bone Wave (骨浪突襲):
+    - Rises sequentially from the ground/platform and surges forward.
+    - Synced Hitbox (tag='sans_bone_wave') activates during active rise/surge and is destroyed on retract.
+    """
+
+    def __init__(
+        self,
+        x,
+        ground_y,
+        height=76,
+        direction=1,
+        speed=255.0,
+        delay=0.0,
+        duration=0.95,
+        cyan=False,
+        damage=14,
+        hitbox_list=None,
+    ):
+        super().__init__(x, ground_y, duration=delay + duration, hitbox=None)
+        self.ground_y = float(ground_y)
+        self.max_height = int(height)
+        self.direction = -1 if direction < 0 else 1
+        self.speed = float(speed)
+        self.delay = max(0.0, float(delay))
+        self.active_duration = max(0.1, float(duration))
+        self.damage = damage
+        self.hitbox_list = hitbox_list
+        self.spawned_hb = False
+
+        base_img = _load_sans_asset("bone_cyan.png" if cyan else "bone_white.png")
+        self.bone_w = 24
+        self.bone_img = pygame.transform.scale(base_img, (self.bone_w, self.max_height))
+        self.cur_height = 0
+
+    def update(self, dt=1 / 60):
+        self.elapsed += dt
+        if self.elapsed >= self.duration:
+            self.destroy()
+            return
+
+        if self.elapsed < self.delay:
+            self.cur_height = 0
+            return
+
+        act_t = (self.elapsed - self.delay) / self.active_duration
+        # Rise quickly (0..0.18), stay tall while surging forward (0.18..0.82), retract (0.82..1.0)
+        if act_t < 0.18:
+            h_ratio = act_t / 0.18
+        elif act_t < 0.82:
+            h_ratio = 1.0
+        else:
+            h_ratio = max(0.0, (1.0 - act_t) / 0.18)
+
+        self.cur_height = int(self.max_height * h_ratio)
+        self.pos_x += self.direction * self.speed * dt
+        self.pos_y = self.ground_y - self.cur_height * 0.5
+
+        if self.cur_height >= 18 and act_t < 0.86:
+            hb_rect = pygame.Rect(
+                int(round(self.pos_x - (self.bone_w - 6) * 0.5)),
+                int(round(self.ground_y - self.cur_height + 4)),
+                self.bone_w - 6,
+                max(10, self.cur_height - 6),
+            )
+            if not self.spawned_hb:
+                self.spawned_hb = True
+                hb = Hitbox(
+                    owner="boss",
+                    rect=hb_rect,
+                    damage=self.damage,
+                    knockback_x=self.direction * 220.0,
+                    lifetime=None,
+                    tag="sans_bone_wave",
+                )
+                self.bind_hitbox(hb)
+                if self.hitbox_list is not None:
+                    self.hitbox_list.append(hb)
+            elif self.hitbox and self.hitbox.active:
+                self.hitbox.rect = hb_rect
+        else:
+            if self.hitbox and self.hitbox.active:
+                self.hitbox.destroy()
+
+    def draw(self, screen, camera_x=0, camera_y=0):
+        sx = int(round(self.pos_x - camera_x))
+        gy = int(round(self.ground_y - camera_y))
+
+        if self.elapsed < self.delay:
+            # Ground cyan telegraph spark before bone erupts
+            pygame.draw.line(screen, (40, 225, 255), (sx - 12, gy), (sx + 12, gy), 3)
+            return
+
+        if self.cur_height < 4:
+            return
+
+        crop_rect = pygame.Rect(0, 0, self.bone_w, min(self.max_height, self.cur_height))
+        sub = self.bone_img.subsurface(crop_rect)
+        screen.blit(sub, (sx - self.bone_w // 2, gy - crop_rect.height))
+
+
+class HomingBoneVFX(BaseVFX):
+    """
+    Sans Attack 2 — Homing Bone Barrage (懸空骨頭齊射):
+    - Hovers and aims at the player during windup with a cyan sightline (no hitbox).
+    - Launches at high speed along the locked aim vector with a synced Hitbox (tag='sans_homing_bone').
+    """
+
+    def __init__(
+        self,
+        x,
+        y,
+        target_x,
+        target_y,
+        windup=0.45,
+        speed=580.0,
+        duration=1.45,
+        cyan=False,
+        damage=15,
+        hitbox_list=None,
+    ):
+        super().__init__(x, y, duration=windup + duration, hitbox=None)
+        self.windup = max(0.05, float(windup))
+        self.speed = float(speed)
+        self.damage = damage
+        self.hitbox_list = hitbox_list
+        self.launched = False
+
+        dx = float(target_x) - float(x)
+        dy = float(target_y) - float(y)
+        dist = max(1.0, math.hypot(dx, dy))
+        self.vx = (dx / dist) * self.speed
+        self.vy = (dy / dist) * self.speed
+        self.angle_rad = math.atan2(dy, dx)
+
+        base_img = _load_sans_asset("bone_cyan.png" if cyan else "bone_white.png")
+        scaled = pygame.transform.scale(base_img, (20, 56))
+        # Bone sprite is vertical; rotate so its lengthwise axis points along angle_rad
+        rot_deg = -math.degrees(self.angle_rad) - 90.0
+        self.rotated_img = pygame.transform.rotate(scaled, rot_deg)
+        self.rect = self.rotated_img.get_rect(center=(int(x), int(y)))
+
+    def update(self, dt=1 / 60):
+        self.elapsed += dt
+        if self.elapsed >= self.duration:
+            self.destroy()
+            return
+
+        if self.elapsed < self.windup:
+            return
+
+        if not self.launched:
+            self.launched = True
+            hb_rect = pygame.Rect(0, 0, 26, 26)
+            hb_rect.center = (int(round(self.pos_x)), int(round(self.pos_y)))
+            kb = 230.0 if self.vx >= 0 else -230.0
+            hb = Hitbox(
+                owner="boss",
+                rect=hb_rect,
+                damage=self.damage,
+                knockback_x=kb,
+                lifetime=None,
+                tag="sans_homing_bone",
+            )
+            self.bind_hitbox(hb)
+            if self.hitbox_list is not None:
+                self.hitbox_list.append(hb)
+
+        self.pos_x += self.vx * dt
+        self.pos_y += self.vy * dt
+        self.rect.center = (int(round(self.pos_x)), int(round(self.pos_y)))
+        if self.hitbox and self.hitbox.active:
+            self.hitbox.rect.center = self.rect.center
+
+    def draw(self, screen, camera_x=0, camera_y=0):
+        sx = int(round(self.pos_x - camera_x))
+        sy = int(round(self.pos_y - camera_y))
+
+        if self.elapsed < self.windup:
+            # Draw pulsing cyan aim line during windup
+            ex = int(sx + math.cos(self.angle_rad) * 260)
+            ey = int(sy + math.sin(self.angle_rad) * 260)
+            pygame.draw.line(screen, (45, 225, 255), (sx, sy), (ex, ey), 1)
+            pygame.draw.circle(screen, (90, 240, 255), (sx, sy), 14, 2)
+
+        draw_rect = self.rotated_img.get_rect(center=(sx, sy))
+        screen.blit(self.rotated_img, draw_rect)
+
+
+class GasterBlasterVFX(BaseVFX):
+    """
+    Sans Attack 3 — Gaster Blaster Laser Beam (龍骨砲高能光束):
+    - WINDUP (0..windup): Summons Gaster Blaster aimed at player with pulsing red/cyan targeting sightline.
+    - ACTIVE (windup..windup+active_time): Jaw snaps open and fires a wide white-cyan laser beam with
+      multi-segment synced Hitboxes sharing a single hit_targets set (so it hits or Perfect Parries cleanly once!).
+    - RECOVERY: Immediately destroys all beam Hitboxes and fades out.
+    """
+
+    def __init__(
+        self,
+        x,
+        y,
+        target_x,
+        target_y,
+        windup=0.65,
+        active_time=0.46,
+        recovery_time=0.26,
+        beam_length=660.0,
+        beam_width=40,
+        damage=22,
+        hitbox_list=None,
+    ):
+        total = windup + active_time + recovery_time
+        super().__init__(x, y, duration=total, hitbox=None)
+        self.windup = float(windup)
+        self.active_time = float(active_time)
+        self.recovery_time = float(recovery_time)
+        self.beam_length = float(beam_length)
+        self.beam_width = int(beam_width)
+        self.damage = damage
+        self.hitbox_list = hitbox_list
+
+        dx = float(target_x) - float(x)
+        dy = float(target_y) - float(y)
+        self.angle_rad = math.atan2(dy, dx)
+        self.dir_x = math.cos(self.angle_rad)
+        self.dir_y = math.sin(self.angle_rad)
+
+        rot_deg = -math.degrees(self.angle_rad)
+        closed_raw = _load_sans_asset("gaster_blaster_closed.png")
+        open_raw = _load_sans_asset("gaster_blaster_open.png")
+        beam_raw = _load_sans_asset("gaster_beam.png")
+
+        self.blaster_closed = pygame.transform.rotate(closed_raw, rot_deg)
+        self.blaster_open = pygame.transform.rotate(open_raw, rot_deg)
+        beam_stretched = pygame.transform.scale(
+            beam_raw, (int(self.beam_length), self.beam_width)
+        )
+        self.beam_img = pygame.transform.rotate(beam_stretched, rot_deg)
+
+        self.beam_hitboxes = []
+        self.spawned_beam = False
+
+    def _clear_beam_hitboxes(self):
+        for hb in self.beam_hitboxes:
+            hb.destroy()
+        self.beam_hitboxes.clear()
+
+    def destroy(self):
+        self._clear_beam_hitboxes()
+        super().destroy()
+
+    def update(self, dt=1 / 60):
+        self.elapsed += dt
+        if self.elapsed >= self.duration:
+            self.destroy()
+            return
+
+        if (
+            not self.spawned_beam
+            and self.elapsed >= self.windup
+            and self.elapsed < self.windup + self.active_time
+        ):
+            self.spawned_beam = True
+            # Share one hit_targets set across all beam segments so player only takes 1 hit / 1 parry
+            shared_hits = set()
+            seg_size = max(32, int(self.beam_width * 0.90))
+            num_segments = max(14, int(math.ceil(self.beam_length / (seg_size * 0.75))))
+            seg_step = self.beam_length / num_segments
+            kb = 280.0 if self.dir_x >= 0 else -280.0
+
+            for i in range(num_segments):
+                dist = 36.0 + seg_step * (i + 0.5)
+                cx = self.pos_x + self.dir_x * dist
+                cy = self.pos_y + self.dir_y * dist
+                hb_rect = pygame.Rect(0, 0, seg_size, seg_size)
+                hb_rect.center = (int(round(cx)), int(round(cy)))
+                hb = Hitbox(
+                    owner="boss",
+                    rect=hb_rect,
+                    damage=self.damage,
+                    knockback_x=kb,
+                    lifetime=self.active_time,
+                    tag="sans_gaster_beam",
+                )
+                hb.hit_targets = shared_hits
+                self.beam_hitboxes.append(hb)
+                if self.hitbox_list is not None:
+                    self.hitbox_list.append(hb)
+
+        elif self.elapsed >= self.windup + self.active_time and self.beam_hitboxes:
+            self._clear_beam_hitboxes()
+
+    def draw(self, screen, camera_x=0, camera_y=0):
+        sx = int(round(self.pos_x - camera_x))
+        sy = int(round(self.pos_y - camera_y))
+
+        # 1. WINDUP: Pulsing red/cyan laser sightline + Blaster sliding/charging
+        if self.elapsed < self.windup:
+            wp = self.elapsed / max(self.windup, 0.01)
+            ex = int(sx + self.dir_x * self.beam_length)
+            ey = int(sy + self.dir_y * self.beam_length)
+            line_col = (255, 70, 90) if int(self.elapsed * 18) % 2 == 0 else (70, 235, 255)
+            pygame.draw.line(screen, line_col, (sx, sy), (ex, ey), 2 if wp > 0.65 else 1)
+
+            img = self.blaster_open if wp > 0.72 else self.blaster_closed
+            screen.blit(img, img.get_rect(center=(sx, sy)))
+            return
+
+        # 2. ACTIVE: Full blazing Gaster Blaster beam + slight recoil
+        if self.elapsed < self.windup + self.active_time:
+            recoil = 8.0 * (1.0 - (self.elapsed - self.windup) / max(self.active_time, 0.01))
+            bx = int(round(sx - self.dir_x * recoil))
+            by = int(round(sy - self.dir_y * recoil))
+
+            beam_mid_x = int(round(bx + self.dir_x * (30.0 + self.beam_length * 0.5)))
+            beam_mid_y = int(round(by + self.dir_y * (30.0 + self.beam_length * 0.5)))
+            screen.blit(
+                self.beam_img, self.beam_img.get_rect(center=(beam_mid_x, beam_mid_y))
+            )
+            screen.blit(self.blaster_open, self.blaster_open.get_rect(center=(bx, by)))
+            return
+
+        # 3. RECOVERY: Fading blaster & beam afterglow
+        rp = (self.elapsed - self.windup - self.active_time) / max(self.recovery_time, 0.01)
+        alpha = max(0, int(255 * (1.0 - rp)))
+        if alpha > 8:
+            ghost = self.blaster_open.copy()
+            ghost.set_alpha(alpha)
+            screen.blit(ghost, ghost.get_rect(center=(sx, sy)))
