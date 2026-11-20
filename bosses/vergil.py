@@ -7,7 +7,14 @@ from VFX import (
     DashSlashVFX,
     ProjectileWaveVFX,
     GroundShockwaveVFX,
+    VergilAuraBurstVFX,
+    JudgementCutEndVFX,
+    VergilIntroRiftVFX,
+    RisingSlashVFX,
+    SingleJudgementCutVFX,
+    SummonedSwordVFX,
 )
+from audio_manager import get_audio
 from bosses.base_boss import BaseBoss, BossState, AttackPhase
 
 
@@ -37,6 +44,18 @@ class Vergil(BaseBoss):
 
         self.dash_dir = -1
         self.dash_start_x = 0.0
+        self.base_speed = 225.0
+        self.phase = 1
+        self.phase2_triggered = False
+        self.jce_center = (float(start_x), float(ground_y - 75.0))
+        self.jce_radius = 290
+        self.skill_cooldowns[BossState.ATTACK_4] = 2.0
+        self.skill_cooldowns[BossState.ATTACK_5] = 2.6
+        self.skill_cooldowns[BossState.ATTACK_6] = 3.2
+        self.skill_cooldowns[BossState.JUDGEMENT_CUT_END] = 0.0
+        self.intro_duration = 2.0
+        self.intro_progress = 0.0
+        self.state = BossState.INTRO
 
         self.animation_speed = {
             "idle": 0.10,
@@ -72,21 +91,40 @@ class Vergil(BaseBoss):
             BossState.ATTACK_1,
             BossState.ATTACK_2,
             BossState.ATTACK_3,
+            BossState.ATTACK_4,
+            BossState.ATTACK_5,
+            BossState.ATTACK_6,
+            BossState.JUDGEMENT_CUT_END,
         ):
             self.face_target()
             self.attack_phase = AttackPhase.WINDUP
-            if new_state == BossState.ATTACK_1:
+            if new_state in (BossState.ATTACK_1, BossState.ATTACK_4):
                 self.animator.play("Attack1", force_reset=True)
             elif new_state == BossState.ATTACK_2:
                 self.dash_dir = self.facing_dir
                 self.dash_start_x = self.pos_x
                 self.animator.play("Dash", force_reset=True)
-            elif new_state == BossState.ATTACK_3:
+            elif new_state in (
+                BossState.ATTACK_3,
+                BossState.ATTACK_5,
+                BossState.ATTACK_6,
+                BossState.JUDGEMENT_CUT_END,
+            ):
                 self.animator.play("Attack1", force_reset=True)
+        elif new_state == BossState.INTRO:
+            self.attack_phase = AttackPhase.NONE
+            self.intro_progress = 0.0
+            self.animator.play("idle", force_reset=True)
+        elif new_state == BossState.PHASE_2_TRANSITION:
+            self.attack_phase = AttackPhase.NONE
+            self.invincible = True
+            self.animator.play("idle", force_reset=True)
         else:
             self.attack_phase = AttackPhase.NONE
+            self.invincible = False
             if new_state == BossState.COOLDOWN:
-                self.cooldown_duration = cooldown_duration
+                cd_mult = 0.78 if self.phase >= 2 else 1.0
+                self.cooldown_duration = cooldown_duration * cd_mult
                 self.animator.play("idle")
             elif new_state == BossState.IDLE:
                 self.animator.play("idle")
@@ -94,6 +132,14 @@ class Vergil(BaseBoss):
                 self.animator.play("Run")
 
     def decide_next_action(self, distance):
+        # Phase 2 Ultimate: Judgement Cut End when off cooldown
+        if (
+            self.phase >= 2
+            and self.skill_cooldowns.get(BossState.JUDGEMENT_CUT_END, 0.0) <= 0.0
+        ):
+            self.change_state(BossState.JUDGEMENT_CUT_END)
+            return
+
         vertical_diff = (
             abs(self.target.pos_y - self.pos_y)
             if (self.target and self.target.alive())
@@ -102,15 +148,27 @@ class Vergil(BaseBoss):
         cd1 = self.skill_cooldowns[BossState.ATTACK_1] <= 0.0
         cd2 = self.skill_cooldowns[BossState.ATTACK_2] <= 0.0
         cd3 = self.skill_cooldowns[BossState.ATTACK_3] <= 0.0
+        cd4 = self.skill_cooldowns.get(BossState.ATTACK_4, 0.0) <= 0.0
+        cd5 = self.skill_cooldowns.get(BossState.ATTACK_5, 0.0) <= 0.0
+        cd6 = self.skill_cooldowns.get(BossState.ATTACK_6, 0.0) <= 0.0
 
         if vertical_diff > 65.0:
+            if cd6 and distance >= 140.0:
+                self.change_state(BossState.ATTACK_6)
+                return
+            if cd5 and distance >= 150.0:
+                self.change_state(BossState.ATTACK_5)
+                return
             if cd3 and distance >= 180.0:
                 self.change_state(BossState.ATTACK_3)
                 return
             self.change_state(BossState.CHASE)
             return
 
-        if distance <= 95:
+        if distance <= 105:
+            if cd4:
+                self.change_state(BossState.ATTACK_4)
+                return
             if cd1:
                 self.change_state(BossState.ATTACK_1)
                 return
@@ -118,15 +176,27 @@ class Vergil(BaseBoss):
                 self.change_state(BossState.ATTACK_2)
                 return
 
-        elif distance <= 280:
+        elif distance <= 285:
+            if cd5:
+                self.change_state(BossState.ATTACK_5)
+                return
             if cd2:
                 self.change_state(BossState.ATTACK_2)
+                return
+            if cd6:
+                self.change_state(BossState.ATTACK_6)
                 return
             if cd3 and distance >= 165:
                 self.change_state(BossState.ATTACK_3)
                 return
 
         else:
+            if cd6:
+                self.change_state(BossState.ATTACK_6)
+                return
+            if cd5:
+                self.change_state(BossState.ATTACK_5)
+                return
             if cd3:
                 self.change_state(BossState.ATTACK_3)
                 return
@@ -169,6 +239,7 @@ class Vergil(BaseBoss):
         )
         self.current_melee_hitbox = hb
         self.register_hitbox(hb, active_hitboxes)
+        get_audio().play_sfx("yamato_slash")
 
         slash_vfx = SlashVFX(
             anchor_entity=self,
@@ -370,6 +441,324 @@ class Vergil(BaseBoss):
             self.skill_cooldowns[BossState.ATTACK_3] = 3.2
             self.change_state(BossState.COOLDOWN, cooldown_duration=0.75)
 
+    def _update_attack_4_rising_slash(self, dt, active_hitboxes, vfx_group, map_width):
+        """
+        Attack A — Rising Slash (High Time Launcher + Airborne Follow-up):
+        Slides in and sweeps upward with knockback_y = -650 to launch unblocked players high
+        into the air, then leaps up for a quick airborne chase slash!
+        """
+        windup_end = 0.30
+        followup_time = 0.54
+        active_end = 0.76
+        recovery_end = 1.08
+
+        if self.state_timer < windup_end:
+            self.attack_phase = AttackPhase.WINDUP
+            self.face_target()
+            self.pos_x += self.facing_dir * 260.0 * dt
+            self.pos_x = max(60.0, min(float(map_width - 60), self.pos_x))
+            self.animator.play("Attack1")
+            self.animator.current_frames = 0.0
+
+        elif self.state_timer < active_end:
+            self.attack_phase = AttackPhase.ACTIVE
+            if self.combo_step == 0:
+                self.combo_step = 1
+                self.face_target()
+                self.animator.current_frames = 1.0
+                # Upward Rising Slash with vertical launch knockback_y = -650!
+                cx = int(round(self.pos_x + self.facing_dir * 40.0))
+                cy = int(round(self.pos_y - 58.0))
+                hb_rect = pygame.Rect(0, 0, 92, 108)
+                hb_rect.center = (cx, cy)
+                hb = Hitbox(
+                    owner="boss",
+                    rect=hb_rect,
+                    damage=16,
+                    knockback_x=self.facing_dir * 165.0,
+                    knockback_y=-650.0,
+                    lifetime=0.20,
+                    tag="vergil_rising_slash",
+                )
+                self.current_melee_hitbox = hb
+                self.register_hitbox(hb, active_hitboxes)
+                vfx = RisingSlashVFX(
+                    anchor_entity=self,
+                    forward_offset=40.0,
+                    vertical_offset=-58.0,
+                    flip=self.flip,
+                    duration=0.22,
+                    hitbox=hb,
+                )
+                self.register_vfx(vfx, vfx_group)
+
+            elif self.combo_step == 1 and self.state_timer >= followup_time:
+                self.combo_step = 2
+                self._clear_melee_hitbox()
+                self.face_target()
+                # Leap upward to pursue launched player with an aerial slash!
+                if self.on_ground:
+                    self.velocity_y = -520.0
+                    self.on_ground = False
+                self.pos_x += self.facing_dir * 28.0
+                self.animator.current_frames = 2.0
+                self._spawn_melee_slash(
+                    active_hitboxes,
+                    vfx_group,
+                    forward_offset=44.0,
+                    vertical_offset=-56.0,
+                    width=106,
+                    height=88,
+                    damage=14,
+                    duration=0.18,
+                    color_outer=(95, 195, 255),
+                )
+
+        elif self.state_timer < recovery_end:
+            if self.attack_phase != AttackPhase.RECOVERY:
+                self.attack_phase = AttackPhase.RECOVERY
+                self._clear_melee_hitbox()
+                self.animator.current_frames = 3.0
+        else:
+            self._clear_melee_hitbox()
+            self.skill_cooldowns[BossState.ATTACK_4] = 3.2
+            self.change_state(BossState.COOLDOWN, cooldown_duration=0.60)
+
+    def _update_attack_5_single_judgement_cut(self, active_hitboxes, vfx_group):
+        """
+        Attack B — Single Judgement Cut:
+        Quick Yamato draw/sheathe spawning a blue-violet spatial slash sphere directly at the player.
+        """
+        windup_end = 0.34
+        active_end = 0.78
+        recovery_end = 1.05
+
+        if self.state_timer < windup_end:
+            self.attack_phase = AttackPhase.WINDUP
+            self.face_target()
+            self.animator.play("Attack1")
+            self.animator.current_frames = 0.0
+        elif self.state_timer < active_end:
+            self.attack_phase = AttackPhase.ACTIVE
+            if self.combo_step == 0:
+                self.combo_step = 1
+                self.animator.current_frames = 3.0
+                get_audio().play_sfx("sheathe")
+                tx = (
+                    self.target.hurtbox.centerx
+                    if (self.target and self.target.alive())
+                    else self.pos_x + self.facing_dir * 220.0
+                )
+                ty = (
+                    self.target.hurtbox.centery
+                    if (self.target and self.target.alive())
+                    else self.pos_y - 45.0
+                )
+                vfx = SingleJudgementCutVFX(
+                    x=tx,
+                    y=ty,
+                    radius=88,
+                    windup_time=0.46,
+                    active_time=0.28,
+                    damage=18,
+                    hitbox_list=active_hitboxes,
+                )
+                self.register_vfx(vfx, vfx_group)
+        elif self.state_timer < recovery_end:
+            self.attack_phase = AttackPhase.RECOVERY
+        else:
+            self.skill_cooldowns[BossState.ATTACK_5] = 3.4
+            self.change_state(BossState.COOLDOWN, cooldown_duration=0.60)
+
+    def _update_attack_6_summoned_swords(self, active_hitboxes, vfx_group):
+        """
+        Attack C — Summoned Swords (Mirage Blades):
+        Summons 4 glowing cyan Mirage Blades beside Vergil / above the player that fire sequentially.
+        """
+        windup_end = 0.30
+        active_end = 0.85
+        recovery_end = 1.15
+
+        if self.state_timer < windup_end:
+            self.attack_phase = AttackPhase.WINDUP
+            self.face_target()
+            self.animator.play("Attack1")
+            self.animator.current_frames = 0.0
+        elif self.state_timer < active_end:
+            self.attack_phase = AttackPhase.ACTIVE
+            if self.combo_step == 0:
+                self.combo_step = 1
+                self.animator.current_frames = 2.0
+                tx = (
+                    self.target.hurtbox.centerx
+                    if (self.target and self.target.alive())
+                    else self.pos_x + self.facing_dir * 220.0
+                )
+                ty = (
+                    self.target.hurtbox.centery
+                    if (self.target and self.target.alive())
+                    else self.pos_y - 45.0
+                )
+                f_dir = self.facing_dir
+                spawns = [
+                    (self.pos_x - f_dir * 28.0, self.pos_y - 108.0),
+                    (self.pos_x + f_dir * 22.0, self.pos_y - 130.0),
+                    (tx - f_dir * 120.0, ty - 155.0),
+                    (tx + f_dir * 40.0, ty - 175.0),
+                ]
+                for i, (sx, sy) in enumerate(spawns):
+                    sword = SummonedSwordVFX(
+                        x=sx,
+                        y=sy,
+                        target_x=tx,
+                        target_y=ty,
+                        windup=0.38 + i * 0.14,
+                        speed=680.0,
+                        duration=1.25,
+                        damage=12,
+                        hitbox_list=active_hitboxes,
+                    )
+                    self.register_vfx(sword, vfx_group)
+        elif self.state_timer < recovery_end:
+            self.attack_phase = AttackPhase.RECOVERY
+        else:
+            self.skill_cooldowns[BossState.ATTACK_6] = 4.0
+            self.change_state(BossState.COOLDOWN, cooldown_duration=0.65)
+
+    def _trigger_phase_2(self, vfx_group=None):
+        """Force-interrupt current action into invincible Phase 2 awakening burst."""
+        self.phase = 2
+        self.phase2_triggered = True
+        self.boss_speed = 270.0
+        self.clear_owned_attacks()
+        self.change_state(BossState.PHASE_2_TRANSITION)
+        self.pending_screen_shake = max(self.pending_screen_shake, 0.45)
+        if vfx_group is not None:
+            vfx_group.add(
+                VergilAuraBurstVFX(self.pos_x, self.pos_y - 52.0, duration=1.0)
+            )
+
+    def _update_phase_2_transition(self, dt, vfx_group):
+        self.invincible = True
+        self.velocity_y = 0.0
+        if self.combo_step == 0:
+            self.combo_step = 1
+            if vfx_group is not None:
+                vfx_group.add(
+                    VergilAuraBurstVFX(self.pos_x, self.pos_y - 52.0, duration=1.0)
+                )
+        if self.state_timer >= 1.0:
+            self.invincible = False
+            # Immediately unleash Judgement Cut End as the Phase 2 opener!
+            self.change_state(BossState.JUDGEMENT_CUT_END)
+
+    def _spawn_jce_sphere_hitbox(self, active_hitboxes, damage, lifetime, tag):
+        cx, cy = self.jce_center
+        hb_w = int(self.jce_radius * 1.65)
+        hb_h = int(self.jce_radius * 1.50)
+        hb_rect = pygame.Rect(0, 0, hb_w, hb_h)
+        hb_rect.center = (int(round(cx)), int(round(cy)))
+        kb = 260.0 if (self.target and self.target.pos_x >= cx) else -260.0
+        hb = Hitbox(
+            owner="boss",
+            rect=hb_rect,
+            damage=damage,
+            knockback_x=kb,
+            lifetime=lifetime,
+            tag=tag,
+        )
+        self.register_hitbox(hb, active_hitboxes)
+
+    def _update_judgement_cut_end(self, dt, active_hitboxes, vfx_group, map_width):
+        """
+        DMC5 Judgement Cut End:
+        - 0.00 .. 1.15s: Teleport to arena center, Yamato sheathe charge + Dimensional Sphere warning.
+        - 1.15 .. 2.35s: Full-screen space shatter + 3 rhythmic parryable Dimensional Sphere slash waves.
+        - 2.35 .. 2.75s: Yamato sheathe click + Final Spatial Shatter detonation + heavy screen shake.
+        - 2.75 .. 3.45s: Recovery window.
+        """
+        windup_end = 1.15
+        slash_end = 2.35
+        shatter_end = 2.75
+        recovery_end = 3.45
+
+        if self.combo_step == 0:
+            self.combo_step = 1
+            # Teleport to arena center for dramatic full-stage Dimensional Sphere
+            center_x = max(240.0, min(float(map_width - 240), float(map_width) * 0.5))
+            self.pos_x = center_x
+            self.velocity_y = 0.0
+            self.face_target()
+            self.jce_center = (self.pos_x, self.pos_y - 80.0)
+            self.pending_screen_shake = max(self.pending_screen_shake, 0.18)
+            get_audio().play_sfx("vergil_teleport")
+
+            jce_vfx = JudgementCutEndVFX(
+                center_x=self.jce_center[0],
+                center_y=self.jce_center[1],
+                radius=self.jce_radius,
+                windup_time=windup_end,
+                slash_duration=slash_end - windup_end,
+                shatter_duration=shatter_end - slash_end,
+            )
+            self.register_vfx(jce_vfx, vfx_group)
+
+        if self.state_timer < windup_end:
+            self.attack_phase = AttackPhase.WINDUP
+            self.animator.play("Attack1")
+            self.animator.current_frames = 0.0
+
+        elif self.state_timer < slash_end:
+            self.attack_phase = AttackPhase.ACTIVE
+            self.animator.play("Attack1")
+            self.animator.current_frames = 2.0
+
+            # 3 rhythmic slash waves inside the Dimensional Sphere (each parryable!)
+            if self.combo_step == 1 and self.state_timer >= 1.15:
+                self.combo_step = 2
+                self._spawn_jce_sphere_hitbox(
+                    active_hitboxes, damage=14, lifetime=0.22, tag="vergil_jce_slash"
+                )
+                self.pending_screen_shake = max(self.pending_screen_shake, 0.22)
+            elif self.combo_step == 2 and self.state_timer >= 1.55:
+                self.combo_step = 3
+                self._spawn_jce_sphere_hitbox(
+                    active_hitboxes, damage=14, lifetime=0.22, tag="vergil_jce_slash"
+                )
+            elif self.combo_step == 3 and self.state_timer >= 1.95:
+                self.combo_step = 4
+                self._spawn_jce_sphere_hitbox(
+                    active_hitboxes, damage=14, lifetime=0.22, tag="vergil_jce_slash"
+                )
+
+        elif self.state_timer < shatter_end:
+            self.attack_phase = AttackPhase.ACTIVE
+            self.animator.play("Attack1")
+            self.animator.current_frames = 3.0
+            if self.combo_step < 5:
+                self.combo_step = 5
+                # Yamato sheathe-click final spatial shatter detonation!
+                get_audio().play_sfx("sheathe")
+                get_audio().play_sfx("jce_shatter")
+                self._spawn_jce_sphere_hitbox(
+                    active_hitboxes, damage=22, lifetime=0.24, tag="vergil_jce_finisher"
+                )
+                self.pending_screen_shake = max(self.pending_screen_shake, 0.55)
+
+        elif self.state_timer < recovery_end:
+            self.attack_phase = AttackPhase.RECOVERY
+            self.animator.play("idle")
+        else:
+            self.skill_cooldowns[BossState.JUDGEMENT_CUT_END] = 11.0
+            self.change_state(BossState.COOLDOWN, cooldown_duration=0.85)
+
+    def reset(self):
+        self.phase = 1
+        self.phase2_triggered = False
+        self.boss_speed = self.base_speed
+        super().reset()
+        self.skill_cooldowns[BossState.JUDGEMENT_CUT_END] = 0.0
+
     def on_parried(self):
         super().on_parried()
         if self.state in (BossState.ATTACK_1, BossState.ATTACK_2):
@@ -379,18 +768,48 @@ class Vergil(BaseBoss):
     def update(self, dt=1 / 60, active_hitboxes=None, vfx_group=None, map_width=1600):
         self._tick_common_timers(dt)
 
+        # Trigger Phase 2 awakening the moment HP drops to/below 50%
+        if (
+            not self.phase2_triggered
+            and self.hp > 0.0
+            and self.hp <= self.max_hp * 0.5
+        ):
+            self._trigger_phase_2(vfx_group=vfx_group)
+
         has_target = bool(self.target and self.target.alive())
         player_x = self.target.pos_x if has_target else self.pos_x
         distance = abs(self.pos_x - player_x)
         old_pos_x = self.pos_x
 
-        if self.state == BossState.COOLDOWN:
+        if self.state == BossState.INTRO:
+            if self.combo_step == 0:
+                self.combo_step = 1
+                self.face_target()
+                if vfx_group is not None:
+                    vfx_group.add(VergilIntroRiftVFX(self, duration=self.intro_duration))
+            elif self.combo_step == 1 and self.state_timer >= 1.22:
+                self.combo_step = 2
+                self.animator.play("Attack1")
+                self.animator.current_frames = 3.0
+                get_audio().play_sfx("sheathe")
+            self.intro_progress = min(1.0, self.state_timer / max(0.01, self.intro_duration))
+            if self.state_timer >= self.intro_duration:
+                self.intro_progress = 1.0
+                self.change_state(BossState.IDLE)
+
+        elif self.state == BossState.PHASE_2_TRANSITION:
+            self._update_phase_2_transition(dt, vfx_group)
+
+        elif self.state == BossState.JUDGEMENT_CUT_END:
+            self._update_judgement_cut_end(dt, active_hitboxes, vfx_group, map_width)
+
+        elif self.state == BossState.COOLDOWN:
             if self.state_timer >= self.cooldown_duration:
                 self.change_state(BossState.IDLE)
 
         elif self.state == BossState.IDLE:
             self.face_target()
-            if self.state_timer >= 0.15:
+            if self.state_timer >= (0.10 if self.phase >= 2 else 0.15):
                 self.decide_next_action(distance)
 
         elif self.state == BossState.CHASE:
@@ -410,17 +829,42 @@ class Vergil(BaseBoss):
         elif self.state == BossState.ATTACK_3:
             self._update_attack_3(dt, active_hitboxes, vfx_group)
 
+        elif self.state == BossState.ATTACK_4:
+            self._update_attack_4_rising_slash(dt, active_hitboxes, vfx_group, map_width)
+
+        elif self.state == BossState.ATTACK_5:
+            self._update_attack_5_single_judgement_cut(active_hitboxes, vfx_group)
+
+        elif self.state == BossState.ATTACK_6:
+            self._update_attack_6_summoned_swords(active_hitboxes, vfx_group)
+
         # Unconditional gravity, map collisions, One-Way Platforms & obstacle vaulting
         self.apply_physics_and_collisions(dt, old_pos_x, map_width)
 
         # Animation frame update
         anim_state = self.animator.current_state or "idle"
         current_fspeed = self.animation_speed.get(anim_state, 0.12)
-        dt_scale = 0.0 if self.attack_phase == AttackPhase.WINDUP else (dt * 60.0)
+        dt_scale = (
+            0.0
+            if (
+                self.attack_phase == AttackPhase.WINDUP
+                or self.state == BossState.JUDGEMENT_CUT_END
+            )
+            else (dt * 60.0)
+        )
         self.image = self.animator.update_get_image(current_fspeed, dt_scale=dt_scale)
 
         if self.flip:
             self.image = pygame.transform.flip(self.image, True, False).convert_alpha()
+
+        # Phase 2 blue-violet Devil Trigger aura glow
+        if self.phase >= 2:
+            glow = int(38 + 26 * abs(math.sin(pygame.time.get_ticks() * 0.008)))
+            self.image = self.image.copy()
+            self.image.fill(
+                (int(glow * 0.45), int(glow * 0.55), min(255, glow * 2)),
+                special_flags=pygame.BLEND_RGB_ADD,
+            )
 
         # Wind-up telegraph & Hit Flash overlays
         if self.attack_phase == AttackPhase.WINDUP:
@@ -430,9 +874,10 @@ class Vergil(BaseBoss):
                 self.image.fill(
                     (pulse, int(pulse * 0.4), 0), special_flags=pygame.BLEND_RGB_ADD
                 )
-            elif self.state == BossState.ATTACK_3:
+            elif self.state in (BossState.ATTACK_3, BossState.JUDGEMENT_CUT_END):
                 self.image.fill(
-                    (int(pulse * 0.6), 0, pulse), special_flags=pygame.BLEND_RGB_ADD
+                    (int(pulse * 0.65), int(pulse * 0.3), min(255, pulse + 40)),
+                    special_flags=pygame.BLEND_RGB_ADD,
                 )
             else:
                 self.image.fill(

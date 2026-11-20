@@ -27,15 +27,19 @@ class Hitbox:
         knockback_x=180.0,
         lifetime=None,
         tag="melee",
+        attack_type="white",
+        knockback_y=0.0,
     ):
-        self.owner = owner  # "player" 或 "boss"
+        self.owner = owner  # "player", "boss", or "enemy"
         self.rect = pygame.Rect(rect)
         self.damage = damage
         self.knockback_x = knockback_x
-        self.lifetime = lifetime  # 若為 float 則自動倒數銷毀；若由 VFX/動畫控制則隨宿主銷毀
+        self.knockback_y = float(knockback_y)
+        self.lifetime = lifetime
         self.elapsed = 0.0
         self.active = True
         self.tag = tag
+        self.attack_type = attack_type  # "white" (always hits) or "blue" (stay still to dodge)
         self.hit_targets = set()
 
     def can_hit(self, target):
@@ -1187,7 +1191,14 @@ def _draw_crosshair(screen, x, y, color, radius=5):
 
 
 def draw_debug_boxes(
-    screen, camera_x, camera_y, player, boss, active_hitboxes, vfx_group=None
+    screen,
+    camera_x,
+    camera_y,
+    player,
+    boss,
+    active_hitboxes,
+    vfx_group=None,
+    regular_enemies=None,
 ):
     """
     在開啟 Debug 模式時繪製：
@@ -1266,6 +1277,43 @@ def draw_debug_boxes(
             2,
         )
 
+    if regular_enemies is not None:
+        for mob in regular_enemies:
+            if not mob.alive():
+                continue
+            pygame.draw.rect(
+                screen,
+                (110, 110, 120),
+                mob.rect.move(-camera_x, -camera_y),
+                1,
+            )
+            pygame.draw.rect(
+                screen,
+                COLOR_DEBUG_COLLISION,
+                mob.collision_rect.move(-camera_x, -camera_y),
+                1,
+            )
+            mh_screen = mob.hurtbox.move(-camera_x, -camera_y)
+            pygame.draw.rect(screen, COLOR_DEBUG_HURTBOX, mh_screen, 2)
+            _draw_crosshair(
+                screen,
+                mh_screen.centerx,
+                mh_screen.centery,
+                COLOR_DEBUG_HURTBOX,
+                radius=3,
+            )
+            m_ax = int(mob.pos_x - camera_x)
+            m_ay = int(mob.pos_y - camera_y)
+            _draw_crosshair(screen, m_ax, m_ay, (255, 80, 255), radius=4)
+            m_facing = getattr(mob, "facing_dir", -1)
+            pygame.draw.line(
+                screen,
+                (255, 80, 255),
+                (mh_screen.centerx, mh_screen.centery),
+                (mh_screen.centerx + m_facing * 16, mh_screen.centery),
+                2,
+            )
+
     if vfx_group is not None:
         for vfx in vfx_group:
             vx, vy = vfx.anchor_point
@@ -1335,12 +1383,19 @@ class BoneWaveVFX(BaseVFX):
         self.delay = max(0.0, float(delay))
         self.active_duration = max(0.1, float(duration))
         self.damage = damage
+        self.is_blue = bool(cyan)
+        self.attack_type = "blue" if self.is_blue else "white"
         self.hitbox_list = hitbox_list
         self.spawned_hb = False
 
         base_img = _load_sans_asset("bone_cyan.png" if cyan else "bone_white.png")
         self.bone_w = 24
         self.bone_img = pygame.transform.scale(base_img, (self.bone_w, self.max_height))
+        if self.is_blue:
+            # High-saturation Sky Blue (#00BFFF) enhancement for unmistakable Blue Attacks
+            self.bone_img = self.bone_img.copy()
+            self.bone_img.fill((0, 191, 255), special_flags=pygame.BLEND_RGB_MULT)
+            self.bone_img.fill((0, 95, 165), special_flags=pygame.BLEND_RGB_ADD)
         self.cur_height = 0
 
     def update(self, dt=1 / 60):
@@ -1382,6 +1437,7 @@ class BoneWaveVFX(BaseVFX):
                     knockback_x=self.direction * 220.0,
                     lifetime=None,
                     tag="sans_bone_wave",
+                    attack_type=self.attack_type,
                 )
                 self.bind_hitbox(hb)
                 if self.hitbox_list is not None:
@@ -1433,6 +1489,8 @@ class HomingBoneVFX(BaseVFX):
         self.windup = max(0.05, float(windup))
         self.speed = float(speed)
         self.damage = damage
+        self.is_blue = bool(cyan)
+        self.attack_type = "blue" if self.is_blue else "white"
         self.hitbox_list = hitbox_list
         self.launched = False
 
@@ -1445,6 +1503,10 @@ class HomingBoneVFX(BaseVFX):
 
         base_img = _load_sans_asset("bone_cyan.png" if cyan else "bone_white.png")
         scaled = pygame.transform.scale(base_img, (20, 56))
+        if self.is_blue:
+            scaled = scaled.copy()
+            scaled.fill((0, 191, 255), special_flags=pygame.BLEND_RGB_MULT)
+            scaled.fill((0, 95, 165), special_flags=pygame.BLEND_RGB_ADD)
         # Bone sprite is vertical; rotate so its lengthwise axis points along angle_rad
         rot_deg = -math.degrees(self.angle_rad) - 90.0
         self.rotated_img = pygame.transform.rotate(scaled, rot_deg)
@@ -1461,6 +1523,9 @@ class HomingBoneVFX(BaseVFX):
 
         if not self.launched:
             self.launched = True
+            from audio_manager import get_audio
+
+            get_audio().play_sfx("bone_shoot")
             hb_rect = pygame.Rect(0, 0, 26, 26)
             hb_rect.center = (int(round(self.pos_x)), int(round(self.pos_y)))
             kb = 230.0 if self.vx >= 0 else -230.0
@@ -1471,6 +1536,7 @@ class HomingBoneVFX(BaseVFX):
                 knockback_x=kb,
                 lifetime=None,
                 tag="sans_homing_bone",
+                attack_type=self.attack_type,
             )
             self.bind_hitbox(hb)
             if self.hitbox_list is not None:
@@ -1550,6 +1616,9 @@ class GasterBlasterVFX(BaseVFX):
 
         self.beam_hitboxes = []
         self.spawned_beam = False
+        from audio_manager import get_audio
+
+        get_audio().play_sfx("blaster_charge")
 
     def _clear_beam_hitboxes(self):
         for hb in self.beam_hitboxes:
@@ -1572,6 +1641,9 @@ class GasterBlasterVFX(BaseVFX):
             and self.elapsed < self.windup + self.active_time
         ):
             self.spawned_beam = True
+            from audio_manager import get_audio
+
+            get_audio().play_sfx("blaster_fire")
             # Share one hit_targets set across all beam segments so player only takes 1 hit / 1 parry
             shared_hits = set()
             seg_size = max(32, int(self.beam_width * 0.90))
@@ -1638,3 +1710,1034 @@ class GasterBlasterVFX(BaseVFX):
             ghost = self.blaster_open.copy()
             ghost.set_alpha(alpha)
             screen.blit(ghost, ghost.get_rect(center=(sx, sy)))
+
+
+# =============================================================================
+# Regular Enemy VFX — Slimer Death Burst (SlimerDeath.png, 7 frames of 64x58)
+# =============================================================================
+
+_SLIMER_DEATH_FRAMES = None
+
+
+def _get_slimer_death_frames(scale=1.45):
+    global _SLIMER_DEATH_FRAMES
+    if _SLIMER_DEATH_FRAMES is not None:
+        return _SLIMER_DEATH_FRAMES
+
+    path = os.path.join("assets", "sprites", "slimer", "SlimerDeath.png")
+    frames = []
+    if os.path.exists(path):
+        sheet = pygame.image.load(path).convert_alpha()
+        num_frames = 7
+        fw = sheet.get_width() // num_frames
+        fh = sheet.get_height()
+        tw = max(1, int(round(fw * scale)))
+        th = max(1, int(round(fh * scale)))
+        for i in range(num_frames):
+            sub = sheet.subsurface(pygame.Rect(i * fw, 0, fw, fh)).copy()
+            frames.append(pygame.transform.scale(sub, (tw, th)))
+    else:
+        for i in range(5):
+            surf = pygame.Surface((48, 48), pygame.SRCALPHA)
+            pygame.draw.circle(surf, (190, 90, 220, max(30, 230 - i * 45)), (24, 24), 8 + i * 4, 2)
+            frames.append(surf)
+
+    _SLIMER_DEATH_FRAMES = frames
+    return frames
+
+
+class SlimerDeathVFX(BaseVFX):
+    """Plays the 7-frame pixel-art SlimerDeath.png skull explosion when a Slimer dies."""
+
+    def __init__(self, x, y, duration=0.46, scale=1.45):
+        super().__init__(x, y, duration=duration, hitbox=None)
+        self.frames = _get_slimer_death_frames(scale=scale)
+
+    def draw(self, screen, camera_x=0, camera_y=0):
+        if not self.frames:
+            return
+        idx = min(len(self.frames) - 1, int(self.progress * len(self.frames)))
+        img = self.frames[idx]
+        sx = int(round(self.pos_x - camera_x))
+        sy = int(round(self.pos_y - camera_y))
+        screen.blit(img, img.get_rect(center=(sx, sy)))
+
+
+# =============================================================================
+# Vergil Phase 2 Awakening & Judgement Cut End (DMC5 Ultimate VFX)
+# =============================================================================
+
+
+class VergilAuraBurstVFX(BaseVFX):
+    """
+    Blue-violet Devil Trigger awakening aura burst when Vergil drops below 50% HP.
+    """
+
+    def __init__(self, x, y, duration=1.0):
+        super().__init__(x, y, duration=duration, hitbox=None)
+        self._canvas = pygame.Surface((320, 320), pygame.SRCALPHA)
+        self.shards = []
+        for i in range(28):
+            ang = (i / 28.0) * math.tau + random.uniform(-0.1, 0.1)
+            spd = random.uniform(70.0, 155.0)
+            sz = random.choice([3, 4, 5])
+            col = random.choice([(80, 195, 255), (145, 90, 255), (225, 245, 255)])
+            self.shards.append((ang, spd, sz, col))
+
+    def draw(self, screen, camera_x=0, camera_y=0):
+        p = self.progress
+        alpha = max(0, min(255, int(255 * math.sin(min(1.0, p) * math.pi))))
+        if alpha <= 6:
+            return
+
+        sx = int(round(self.pos_x - camera_x))
+        sy = int(round(self.pos_y - camera_y))
+
+        surf = self._canvas
+        surf.fill((0, 0, 0, 0))
+        cx, cy = 160, 180
+
+        # Vertical blue-violet awakening pillar
+        pillar_w = max(4, int(52 * math.sin(p * math.pi)))
+        pygame.draw.rect(
+            surf,
+            (95, 70, 255, int(alpha * 0.48)),
+            (cx - pillar_w, 0, pillar_w * 2, 320),
+        )
+        pygame.draw.rect(
+            surf,
+            (130, 230, 255, int(alpha * 0.78)),
+            (cx - pillar_w // 2, 0, max(2, pillar_w), 320),
+        )
+
+        # Expanding shockwave rings
+        r1 = int(24 + 130 * p)
+        r2 = int(12 + 92 * p)
+        pygame.draw.circle(surf, (110, 215, 255, alpha), (cx, cy), r1, 3)
+        pygame.draw.circle(surf, (165, 95, 255, int(alpha * 0.85)), (cx, cy), r2, 2)
+
+        # Radiating pixel shards
+        for ang, spd, sz, col in self.shards:
+            px = int(cx + math.cos(ang) * spd * p)
+            py = int(cy + math.sin(ang) * spd * p)
+            pygame.draw.rect(surf, (*col, alpha), (px - sz // 2, py - sz // 2, sz, sz))
+
+        screen.blit(surf, (sx - cx, sy - cy))
+
+
+class JudgementCutEndVFX(BaseVFX):
+    """
+    DMC5-Inspired Vergil Phase 2 Ultimate — Judgement Cut End (3-Layer Depth & Screen-Breaking):
+    1. draw_background_layer(world_surface, cx, cy): Deep darkened space, expanding blue-violet
+       spatial rifts & radial speed lines behind all characters.
+    2. draw(world_surface, cx, cy): Multi-concentric translucent cyan-blue Dimensional Spheres,
+       3-tone slashes (deep purple afterimage + bright cyan glow + pure white core) & flying shards.
+    3. draw_screen_overlay(screen): Rendered ABOVE all entities, camera zoom, and HUD! Draws massive
+       diagonal screen-spanning slash beams, 4-corner shattered screen cracks, and a high-contrast
+       sheathe-click flash that visually splits the entire monitor!
+    """
+
+    def __init__(
+        self,
+        center_x,
+        center_y,
+        radius=295,
+        windup_time=1.15,
+        slash_duration=1.20,
+        shatter_duration=0.45,
+    ):
+        total = windup_time + slash_duration + shatter_duration
+        super().__init__(center_x, center_y, duration=total, hitbox=None)
+        self.radius = int(radius)
+        self.windup_time = float(windup_time)
+        self.slash_end = float(windup_time + slash_duration)
+        self.shatter_duration = float(shatter_duration)
+
+        # Midground 3-tone slash pool inside the Dimensional Sphere
+        self.slash_pool = []
+        for _ in range(64):
+            a1 = random.uniform(0.0, math.tau)
+            a2 = a1 + random.uniform(math.pi * 0.55, math.pi * 1.45)
+            r1 = random.uniform(0.45, 1.08) * self.radius
+            r2 = random.uniform(0.45, 1.08) * self.radius
+            thick = random.choice([2, 3, 3, 4])
+            self.slash_pool.append(
+                (
+                    math.cos(a1) * r1,
+                    math.sin(a1) * r1,
+                    math.cos(a2) * r2,
+                    math.sin(a2) * r2,
+                    thick,
+                )
+            )
+
+        # Background radial dark speed lines
+        self.bg_speed_rays = []
+        for i in range(48):
+            ang = (i / 48.0) * math.tau + random.uniform(-0.04, 0.04)
+            inner_r = random.uniform(110.0, 260.0)
+            thick = random.choice([2, 3, 4])
+            self.bg_speed_rays.append((ang, inner_r, thick))
+
+        # Geometric glass shards for midground & foreground shatter
+        self.shards = []
+        for _ in range(44):
+            ang = random.uniform(0.0, math.tau)
+            dist = random.uniform(35.0, self.radius * 0.98)
+            spd = random.uniform(85.0, 260.0)
+            sz = random.choice([5, 7, 9, 11])
+            col = random.choice([(135, 235, 255), (165, 105, 255), (240, 252, 255)])
+            self.shards.append((ang, dist, spd, sz, col))
+
+        # Foreground screen-breaking diagonal slash specifications (normalized 0..1 screen coords)
+        self.screen_slashes = [
+            ((0.0, 0.14), (1.0, 0.86), 5),
+            ((1.0, 0.10), (0.0, 0.88), 5),
+            ((0.12, 0.0), (0.86, 1.0), 4),
+            ((0.88, 0.0), (0.14, 1.0), 4),
+            ((0.0, 0.52), (1.0, 0.34), 4),
+            ((0.0, 0.72), (1.0, 0.18), 3),
+            ((0.35, 0.0), (0.68, 1.0), 3),
+            ((0.66, 0.0), (0.30, 1.0), 3),
+        ]
+
+        # 4-Corner screen glass fracture branches (normalized offsets from each corner)
+        self.corner_cracks = []
+        for cx_n, cy_n, dx_s, dy_s in (
+            (0.0, 0.0, 1, 1),
+            (1.0, 0.0, -1, 1),
+            (0.0, 1.0, 1, -1),
+            (1.0, 1.0, -1, -1),
+        ):
+            for branch in range(4):
+                ang = (0.14 + branch * 0.22) * (math.pi * 0.5)
+                l1 = random.uniform(80.0, 155.0)
+                l2 = random.uniform(60.0, 130.0)
+                bend = random.uniform(-0.28, 0.28)
+                self.corner_cracks.append((cx_n, cy_n, dx_s, dy_s, ang, l1, l2, bend))
+
+        self._dim_surf = None
+        self._fg_surf = None
+        self._sphere_surf = pygame.Surface(
+            (self.radius * 2 + 40, self.radius * 2 + 40), pygame.SRCALPHA
+        )
+
+    # ------------------------------------------------------------------
+    # LAYER 1: Background Spatial Distortion & Radial Speed Lines
+    # ------------------------------------------------------------------
+    def draw_background_layer(self, screen, camera_x=0, camera_y=0):
+        sw, sh = screen.get_size()
+        if self._dim_surf is None or self._dim_surf.get_size() != (sw, sh):
+            self._dim_surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
+
+        sx = int(round(self.pos_x - camera_x))
+        sy = int(round(self.pos_y - camera_y))
+        t = self.elapsed
+
+        if t < self.windup_time:
+            wp = t / max(0.01, self.windup_time)
+            self._dim_surf.fill((8, 10, 30, int(125 * wp)))
+            # Subtle inward-pulling dark violet speed lines
+            for ang, inner_r, thick in self.bg_speed_rays[::2]:
+                r_out = max(sw, sh) * 0.85
+                r_in = max(60.0, inner_r * (1.25 - 0.55 * wp))
+                p1 = (int(sx + math.cos(ang) * r_out), int(sy + math.sin(ang) * r_out))
+                p2 = (int(sx + math.cos(ang) * r_in), int(sy + math.sin(ang) * r_in))
+                pygame.draw.line(self._dim_surf, (90, 60, 210, int(110 * wp)), p1, p2, thick)
+            screen.blit(self._dim_surf, (0, 0))
+            return
+
+        if t < self.slash_end:
+            sp = (t - self.windup_time) / max(0.01, self.slash_end - self.windup_time)
+            self._dim_surf.fill((4, 6, 22, 185))
+            # Expanding deep blue-violet spatial rift rings in the background
+            for k in range(3):
+                ring_p = (sp * 1.6 + k * 0.33) % 1.0
+                rr = int(120 + ring_p * 520)
+                ra = int(165 * (1.0 - ring_p))
+                pygame.draw.circle(self._dim_surf, (85, 65, 220, ra), (sx, sy), rr, 3)
+
+            # High-density radial dark/blue speed lines bursting outward
+            jitter = int(t * 24.0) * 0.03
+            for i, (ang, inner_r, thick) in enumerate(self.bg_speed_rays):
+                a = ang + jitter * (1 if i % 2 == 0 else -1)
+                r_out = max(sw, sh) * 0.95
+                p1 = (int(sx + math.cos(a) * inner_r), int(sy + math.sin(a) * inner_r))
+                p2 = (int(sx + math.cos(a) * r_out), int(sy + math.sin(a) * r_out))
+                col = (25, 45, 130, 170) if i % 3 else (105, 70, 235, 145)
+                pygame.draw.line(self._dim_surf, col, p1, p2, thick)
+
+            screen.blit(self._dim_surf, (0, 0))
+            return
+
+        # Shatter fade-out
+        fp = min(1.0, (t - self.slash_end) / max(0.01, self.shatter_duration))
+        fade = max(0.0, 1.0 - fp)
+        self._dim_surf.fill((6, 10, 28, int(145 * fade)))
+        screen.blit(self._dim_surf, (0, 0))
+
+    # ------------------------------------------------------------------
+    # LAYER 2: Midground Concentric Dimensional Sphere & 3-Tone Slashes
+    # ------------------------------------------------------------------
+    def draw(self, screen, camera_x=0, camera_y=0):
+        sx = int(round(self.pos_x - camera_x))
+        sy = int(round(self.pos_y - camera_y))
+        t = self.elapsed
+        r = self.radius
+        sc = r + 20
+
+        self._sphere_surf.fill((0, 0, 0, 0))
+
+        # PHASE 1: WINDUP (Converging Spatial Rifts & Concentric Warning Sphere)
+        if t < self.windup_time:
+            wp = t / max(0.01, self.windup_time)
+            pygame.draw.circle(self._sphere_surf, (30, 38, 128, int(40 + 50 * wp)), (sc, sc), r)
+            ring_a = int(135 + 115 * abs(math.sin(t * 16.0)))
+            pygame.draw.circle(self._sphere_surf, (130, 240, 255, ring_a), (sc, sc), r, 3)
+            pygame.draw.circle(
+                self._sphere_surf, (145, 95, 255, int(120 * wp)), (sc, sc), int(r * 0.72), 2
+            )
+
+            for i in range(16):
+                ang = (i / 16.0) * math.tau + t * 1.6
+                outer_r = int(r * (1.0 - wp * 0.74))
+                inner_r = max(12, outer_r - 64)
+                p1 = (int(sc + math.cos(ang) * outer_r), int(sc + math.sin(ang) * outer_r))
+                p2 = (int(sc + math.cos(ang) * inner_r), int(sc + math.sin(ang) * inner_r))
+                pygame.draw.line(self._sphere_surf, (135, 230, 255, 210), p1, p2, 2)
+
+            glint_r = max(5, int(22 * (1.0 - abs(wp - 0.85))))
+            pygame.draw.circle(self._sphere_surf, (235, 252, 255, 240), (sc, sc), glint_r)
+            screen.blit(self._sphere_surf, (sx - sc, sy - sc))
+            return
+
+        # PHASE 2: MULTI-CONCENTRIC SPHERE + 3-TONE SLASHES + FLYING SHARDS
+        if t < self.slash_end:
+            sp = (t - self.windup_time) / max(0.01, self.slash_end - self.windup_time)
+            pulse = int(math.sin(t * 18.0) * 6)
+
+            # 3 Concentric Translucent Cyan-Blue Dimensional Spheres
+            pygame.draw.circle(self._sphere_surf, (18, 28, 102, 132), (sc, sc), r)
+            pygame.draw.circle(self._sphere_surf, (45, 95, 225, 86), (sc, sc), int(r * 0.82) + pulse)
+            pygame.draw.circle(self._sphere_surf, (95, 195, 255, 58), (sc, sc), int(r * 0.58) - pulse)
+
+            pygame.draw.circle(self._sphere_surf, (135, 242, 255, 245), (sc, sc), r, 4)
+            pygame.draw.circle(self._sphere_surf, (170, 100, 255, 200), (sc, sc), int(r * 0.84), 2)
+            pygame.draw.circle(self._sphere_surf, (215, 250, 255, 175), (sc, sc), int(r * 0.62), 2)
+
+            # 3-Tone High-Frequency Slashes: Deep Purple Afterimage -> Bright Cyan Glow -> Pure White Core
+            step = int(t * 32.0)
+            total_pool = len(self.slash_pool)
+            for k in range(20):
+                idx = (step * 5 + k * 3) % total_pool
+                x1, y1, x2, y2, thick = self.slash_pool[idx]
+                p1 = (int(sc + x1), int(sc + y1))
+                p2 = (int(sc + x2), int(sc + y2))
+                is_fresh = k >= 12
+                a_purp = 185 if is_fresh else 110
+                a_cyan = 235 if is_fresh else 155
+                a_core = 255 if is_fresh else 190
+                pygame.draw.line(self._sphere_surf, (125, 55, 235, a_purp), p1, p2, thick + 5)
+                pygame.draw.line(self._sphere_surf, (65, 225, 255, a_cyan), p1, p2, thick + 2)
+                pygame.draw.line(self._sphere_surf, (255, 255, 255, a_core), p1, p2, max(1, thick - 1))
+
+            # Flying geometric glass shards inside & bursting out of the sphere
+            for ang, dist, spd, sz, col in self.shards[:24]:
+                cur_d = (dist + spd * sp * 0.9) % (r + 12)
+                px = int(sc + math.cos(ang) * cur_d)
+                py = int(sc + math.sin(ang) * cur_d)
+                pygame.draw.polygon(
+                    self._sphere_surf,
+                    (*col, 210),
+                    [(px, py - sz), (px + sz, py), (px, py + sz), (px - sz // 2, py)],
+                )
+
+            screen.blit(self._sphere_surf, (sx - sc, sy - sc))
+            return
+
+        # PHASE 3: SHEATHE-CLICK SHATTER RING & BURSTING SHARDS
+        fp = min(1.0, (t - self.slash_end) / max(0.01, self.shatter_duration))
+        fade = max(0.0, 1.0 - fp)
+        ring_r = min(sc - 2, int(r * (1.0 + 0.08 * fp)))
+        pygame.draw.circle(self._sphere_surf, (230, 252, 255, int(245 * fade)), (sc, sc), ring_r, 5)
+
+        shard_a = int(250 * fade)
+        for ang, dist, spd, sz, col in self.shards:
+            cur_d = dist + spd * fp
+            px = int(sc + math.cos(ang) * cur_d)
+            py = int(sc + math.sin(ang) * cur_d)
+            if 0 <= px < self._sphere_surf.get_width() and 0 <= py < self._sphere_surf.get_height():
+                pygame.draw.polygon(
+                    self._sphere_surf,
+                    (*col, shard_a),
+                    [(px, py - sz), (px + sz, py), (px, py + sz), (px - sz // 2, py)],
+                )
+
+        screen.blit(self._sphere_surf, (sx - sc, sy - sc))
+
+    # ------------------------------------------------------------------
+    # LAYER 3: Foreground Screen-Breaking Overlay (Above ALL Entities & HUD!)
+    # ------------------------------------------------------------------
+    def draw_screen_overlay(self, screen):
+        t = self.elapsed
+        if t < self.windup_time * 0.72:
+            return
+
+        sw, sh = screen.get_size()
+        if self._fg_surf is None or self._fg_surf.get_size() != (sw, sh):
+            self._fg_surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        self._fg_surf.fill((0, 0, 0, 0))
+
+        # Late windup: faint corner cracks begin forming
+        if t < self.windup_time:
+            cp = (t - self.windup_time * 0.72) / max(0.01, self.windup_time * 0.28)
+            self._draw_corner_cracks(self._fg_surf, sw, sh, intensity=cp * 0.45, alpha=int(120 * cp))
+            screen.blit(self._fg_surf, (0, 0))
+            return
+
+        # ACTIVE PHASE: Massive diagonal screen-spanning slashes + cracking monitor edges!
+        if t < self.slash_end:
+            sp = (t - self.windup_time) / max(0.01, self.slash_end - self.windup_time)
+            self._draw_corner_cracks(self._fg_surf, sw, sh, intensity=0.55 + 0.45 * sp, alpha=220)
+
+            step = int(t * 16.0)
+            num_sl = len(self.screen_slashes)
+            for k in range(4):
+                idx = (step + k * 2) % num_sl
+                (x1n, y1n), (x2n, y2n), thick = self.screen_slashes[idx]
+                p1 = (int(x1n * sw), int(y1n * sh))
+                p2 = (int(x2n * sw), int(y2n * sh))
+                # 3-tone giant screen-breaking beam cutting across the entire monitor
+                pygame.draw.line(self._fg_surf, (130, 60, 255, 160), p1, p2, thick + 10)
+                pygame.draw.line(self._fg_surf, (70, 230, 255, 225), p1, p2, thick + 4)
+                pygame.draw.line(self._fg_surf, (255, 255, 255, 255), p1, p2, thick)
+
+            screen.blit(self._fg_surf, (0, 0))
+            return
+
+        # SHEATHE-CLICK DETONATION: High-contrast flash + all screen slashes & cracks shattering!
+        fp = min(1.0, (t - self.slash_end) / max(0.01, self.shatter_duration))
+        fade = max(0.0, 1.0 - fp)
+
+        if fp < 0.14:
+            # Blazing high-contrast cyan-white flash
+            flash_a = int(225 * (1.0 - fp / 0.14))
+            self._fg_surf.fill((220, 248, 255, flash_a))
+        elif fp < 0.30:
+            # High-contrast deep electric blue-violet negative pulse
+            pulse_a = int(155 * (1.0 - (fp - 0.14) / 0.16))
+            self._fg_surf.fill((35, 95, 255, pulse_a))
+
+        self._draw_corner_cracks(self._fg_surf, sw, sh, intensity=1.15, alpha=int(245 * fade))
+        for (x1n, y1n), (x2n, y2n), thick in self.screen_slashes[:4]:
+            p1 = (int(x1n * sw), int(y1n * sh))
+            p2 = (int(x2n * sw), int(y2n * sh))
+            pygame.draw.line(self._fg_surf, (95, 235, 255, int(210 * fade)), p1, p2, thick + 3)
+            pygame.draw.line(self._fg_surf, (255, 255, 255, int(245 * fade)), p1, p2, max(1, thick - 1))
+
+        screen.blit(self._fg_surf, (0, 0))
+
+    def _draw_corner_cracks(self, surf, sw, sh, intensity=1.0, alpha=200):
+        if alpha <= 8:
+            return
+        for cx_n, cy_n, dx_s, dy_s, ang, l1, l2, bend in self.corner_cracks:
+            x0 = int(cx_n * sw)
+            y0 = int(cy_n * sh)
+            x1 = int(x0 + dx_s * math.cos(ang) * l1 * intensity)
+            y1 = int(y0 + dy_s * math.sin(ang) * l1 * intensity)
+            x2 = int(x1 + dx_s * math.cos(ang + bend) * l2 * intensity)
+            y2 = int(y1 + dy_s * math.sin(ang + bend) * l2 * intensity)
+            pygame.draw.line(surf, (95, 195, 255, int(alpha * 0.7)), (x0, y0), (x1, y1), 3)
+            pygame.draw.line(surf, (240, 252, 255, alpha), (x0, y0), (x1, y1), 1)
+            pygame.draw.line(surf, (150, 110, 255, int(alpha * 0.65)), (x1, y1), (x2, y2), 2)
+            pygame.draw.line(surf, (225, 250, 255, int(alpha * 0.9)), (x1, y1), (x2, y2), 1)
+
+
+class FloatingTextVFX(BaseVFX):
+    """
+    Crisp pixel-art floating combat text (e.g. Undertale Sans 'MISS') that drifts upward
+    and fades out cleanly with a dark pixel outline.
+    """
+
+    def __init__(
+        self,
+        x,
+        y,
+        text="MISS",
+        color=(255, 255, 255),
+        outline_color=(15, 15, 25),
+        font_size=26,
+        duration=0.85,
+        rise_speed=58.0,
+    ):
+        super().__init__(x, y, duration=duration, hitbox=None)
+        from Settings import get_pixel_font
+
+        self.rise_speed = float(rise_speed)
+        font = get_pixel_font(font_size)
+        fg = font.render(text, False, color)
+        bg = font.render(text, False, outline_color)
+        w, h = fg.get_size()
+        self.text_surf = pygame.Surface((w + 4, h + 4), pygame.SRCALPHA)
+        for ox, oy in ((-2, 0), (2, 0), (0, -2), (0, 2), (-1, -1), (1, 1), (-1, 1), (1, -1)):
+            self.text_surf.blit(bg, (2 + ox, 2 + oy))
+        self.text_surf.blit(fg, (2, 2))
+
+    def draw(self, screen, camera_x=0, camera_y=0):
+        p = self.progress
+        alpha = max(0, min(255, int(255 * (1.0 - max(0.0, (p - 0.35) / 0.65)))))
+        if alpha <= 8:
+            return
+        sx = int(round(self.pos_x - camera_x))
+        sy = int(round(self.pos_y - self.rise_speed * p - camera_y))
+        surf = self.text_surf.copy()
+        surf.set_alpha(alpha)
+        screen.blit(surf, surf.get_rect(center=(sx, sy)))
+
+
+class BlueSoulHeartVFX(BaseVFX):
+    """
+    Undertale Blue Soul Heart overlay rendered directly on the Player during
+    Sans's Telekinesis Slam, accompanied by an expanding blue gravity pulse ring.
+    """
+
+    def __init__(self, target_player, duration=0.95):
+        cx = target_player.hurtbox.centerx if target_player else 0
+        cy = target_player.hurtbox.centery if target_player else 0
+        super().__init__(cx, cy, duration=duration, hitbox=None)
+        self.target = target_player
+
+        # Build crisp 11x10 pixel-art Blue Soul Heart (scaled 2x -> 22x20)
+        heart_pattern = [
+            "..XX...XX..",
+            ".XXXX.XXXX.",
+            "XXXXXXXXXXX",
+            "XXXXXXXXXXX",
+            "XXXXXXXXXXX",
+            ".XXXXXXXXX.",
+            "..XXXXXXX..",
+            "...XXXXX...",
+            "....XXX....",
+            ".....X.....",
+        ]
+        low = pygame.Surface((13, 12), pygame.SRCALPHA)
+        for ry, row in enumerate(heart_pattern):
+            for rx, ch in enumerate(row):
+                if ch == "X":
+                    # Dark navy pixel outline
+                    for ox, oy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                        low.set_at((rx + 1 + ox, ry + 1 + oy), (10, 20, 65, 255))
+        for ry, row in enumerate(heart_pattern):
+            for rx, ch in enumerate(row):
+                if ch == "X":
+                    col = (95, 220, 255, 255) if (ry <= 2 and rx in (2, 3, 7)) else (0, 165, 255, 255)
+                    low.set_at((rx + 1, ry + 1), col)
+        self.heart_img = pygame.transform.scale(low, (26, 24))
+
+    def update(self, dt=1 / 60):
+        super().update(dt)
+        if self.target is not None and self.target.alive():
+            self.pos_x = float(self.target.hurtbox.centerx)
+            self.pos_y = float(self.target.hurtbox.centery)
+
+    def draw(self, screen, camera_x=0, camera_y=0):
+        p = self.progress
+        alpha = max(0, min(255, int(255 * (1.0 - max(0.0, (p - 0.65) / 0.35)))))
+        if alpha <= 8:
+            return
+        sx = int(round(self.pos_x - camera_x))
+        sy = int(round(self.pos_y - camera_y))
+
+        # Expanding blue telekinesis shockwave ring
+        if p < 0.55:
+            rp = p / 0.55
+            r = int(14 + 42 * rp)
+            ra = int(220 * (1.0 - rp))
+            ring_surf = pygame.Surface((r * 2 + 8, r * 2 + 8), pygame.SRCALPHA)
+            pygame.draw.circle(ring_surf, (0, 195, 255, ra), (r + 4, r + 4), r, 3)
+            screen.blit(ring_surf, (sx - r - 4, sy - r - 4))
+
+        heart = self.heart_img.copy()
+        heart.set_alpha(alpha)
+        screen.blit(heart, heart.get_rect(center=(sx, sy)))
+
+
+class GroundBoneTrapVFX(BaseVFX):
+    """
+    Sans Attack 4 — Ground Bone Trap:
+    - Phase 1 (0 .. warning_time): Flashing red/cyan Warning Zone along the landing floor/platform.
+    - Phase 2 (warning_time .. warning_time + active_time): Instantly erupts a row of sharp pixel
+      bones upward with a synced Active Hitbox (damage=1, tag='sans_bone_trap').
+    - Phase 3 (retract): Destroys Hitbox and retracts the bones back into the floor.
+    """
+
+    def __init__(
+        self,
+        center_x,
+        ground_y,
+        width=224,
+        bone_height=76,
+        warning_time=0.52,
+        active_time=0.52,
+        retract_time=0.18,
+        damage=1,
+        blue=False,
+        hitbox_list=None,
+    ):
+        total = warning_time + active_time + retract_time
+        super().__init__(center_x, ground_y, duration=total, hitbox=None)
+        self.ground_y = float(ground_y)
+        self.trap_width = int(width)
+        self.bone_height = int(bone_height)
+        self.warning_time = float(warning_time)
+        self.active_end = float(warning_time + active_time)
+        self.retract_time = float(retract_time)
+        self.damage = damage
+        self.is_blue = bool(blue)
+        self.attack_type = "blue" if self.is_blue else "white"
+        self.hitbox_list = hitbox_list
+        self.spawned_hb = False
+        self.cur_height = 0
+
+        base_img = _load_sans_asset("bone_cyan.png" if blue else "bone_white.png")
+        self.bone_w = 24
+        self.bone_img = pygame.transform.scale(base_img, (self.bone_w, self.bone_height))
+        if self.is_blue:
+            self.bone_img = self.bone_img.copy()
+            self.bone_img.fill((0, 191, 255), special_flags=pygame.BLEND_RGB_MULT)
+            self.bone_img.fill((0, 95, 165), special_flags=pygame.BLEND_RGB_ADD)
+
+        self.num_bones = max(4, self.trap_width // 30)
+
+    def update(self, dt=1 / 60):
+        self.elapsed += dt
+        if self.elapsed >= self.duration:
+            self.destroy()
+            return
+
+        if self.elapsed < self.warning_time:
+            self.cur_height = 0
+            return
+
+        if self.elapsed < self.active_end:
+            act_p = (self.elapsed - self.warning_time) / max(0.01, self.active_end - self.warning_time)
+            rise_ratio = min(1.0, act_p / 0.16)
+            self.cur_height = int(self.bone_height * rise_ratio)
+            if not self.spawned_hb and self.cur_height >= 24:
+                self.spawned_hb = True
+                hb_rect = pygame.Rect(
+                    int(round(self.pos_x - self.trap_width * 0.5)) + 6,
+                    int(round(self.ground_y - self.bone_height + 6)),
+                    self.trap_width - 12,
+                    self.bone_height - 6,
+                )
+                hb = Hitbox(
+                    owner="boss",
+                    rect=hb_rect,
+                    damage=self.damage,
+                    knockback_x=0.0,
+                    lifetime=None,
+                    tag="sans_bone_trap",
+                    attack_type=self.attack_type,
+                )
+                self.bind_hitbox(hb)
+                if self.hitbox_list is not None:
+                    self.hitbox_list.append(hb)
+        else:
+            if self.hitbox and self.hitbox.active:
+                self.hitbox.destroy()
+            rp = (self.elapsed - self.active_end) / max(0.01, self.retract_time)
+            self.cur_height = max(0, int(self.bone_height * (1.0 - rp)))
+
+    def draw(self, screen, camera_x=0, camera_y=0):
+        sx = int(round(self.pos_x - camera_x))
+        gy = int(round(self.ground_y - camera_y))
+        left_x = sx - self.trap_width // 2
+
+        # Phase 1: Pulsing Red/Cyan Warning Zone Box
+        if self.elapsed < self.warning_time:
+            flash = int(self.elapsed * 18.0) % 2 == 0
+            border_col = (255, 65, 85) if flash else (0, 215, 255)
+            fill_surf = pygame.Surface((self.trap_width, self.bone_height), pygame.SRCALPHA)
+            fill_surf.fill((255, 50, 75, 55) if flash else (0, 185, 255, 45))
+            screen.blit(fill_surf, (left_x, gy - self.bone_height))
+            pygame.draw.rect(
+                screen,
+                border_col,
+                (left_x, gy - self.bone_height, self.trap_width, self.bone_height),
+                2,
+            )
+            # Ground glowing warning strip
+            pygame.draw.line(screen, border_col, (left_x, gy), (left_x + self.trap_width, gy), 4)
+            return
+
+        if self.cur_height < 4:
+            return
+
+        crop = pygame.Rect(0, 0, self.bone_w, min(self.bone_height, self.cur_height))
+        sub = self.bone_img.subsurface(crop)
+        spacing = self.trap_width / max(1, self.num_bones)
+        for i in range(self.num_bones):
+            bx = int(round(left_x + spacing * (i + 0.5) - self.bone_w * 0.5))
+            screen.blit(sub, (bx, gy - crop.height))
+
+
+# =============================================================================
+# Boss Intro Cutscene VFX & New Vergil Moveset VFX
+# =============================================================================
+
+
+class SansIntroVFX(BaseVFX):
+    """
+    Upgraded Undertale Sans Boss Intro Cutscene VFX (paired with 1.40x Camera Zoom-in):
+    - 0.00 .. 0.36s: Rapid classic Undertale black-screen encounter flashes.
+    - 0.45 .. 1.75s: Subtle Blue Soul energy pulse ring beneath Sans's feet.
+    - 0.85 .. 1.90s: Rotating bright cyan & golden-yellow cross-star eye flare on Sans's left eye.
+    """
+
+    def __init__(self, sans_boss, duration=2.0):
+        super().__init__(sans_boss.pos_x, sans_boss.pos_y - 72.0, duration=duration, hitbox=None)
+        self.boss = sans_boss
+        self._blink_surf = None
+        self._ring_surf = pygame.Surface((200, 80), pygame.SRCALPHA)
+
+    def update(self, dt=1 / 60):
+        super().update(dt)
+        if self.boss is not None:
+            f_dir = getattr(self.boss, "facing_dir", -1)
+            self.pos_x = float(self.boss.pos_x + f_dir * 6.0)
+            self.pos_y = float(self.boss.pos_y - 74.0)
+
+    def draw(self, screen, camera_x=0, camera_y=0):
+        t = self.elapsed
+        sx = int(round(self.pos_x - camera_x))
+        sy = int(round(self.pos_y - camera_y))
+
+        # 1. Blue Soul wave expanding beneath Sans's feet
+        if 0.45 <= t <= 1.85 and self.boss is not None:
+            rp = ((t - 0.45) / 0.70) % 1.0
+            rx = int(18 + 62 * rp)
+            ry = int(6 + 18 * rp)
+            ra = int(185 * (1.0 - rp))
+            self._ring_surf.fill((0, 0, 0, 0))
+            pygame.draw.ellipse(
+                self._ring_surf,
+                (0, 195, 255, ra),
+                (100 - rx, 40 - ry, rx * 2, ry * 2),
+                2,
+            )
+            bx = int(round(self.boss.pos_x - camera_x))
+            by = int(round(self.boss.pos_y - camera_y))
+            screen.blit(self._ring_surf, (bx - 100, by - 40))
+
+        # 2. Rotating Cyan & Golden-Yellow Cross-Star Eye Flare
+        if 0.85 <= t <= 1.92:
+            ep = (t - 0.85) / 1.07
+            intensity = math.sin(min(1.0, ep) * math.pi)
+            if intensity > 0.05:
+                col = (55, 235, 255) if int(t * 20.0) % 2 == 0 else (255, 225, 55)
+                arm = int(38 * intensity)
+                rot = t * 5.2
+                for k in range(4):
+                    ang = rot + k * (math.pi * 0.5)
+                    ex = int(sx + math.cos(ang) * arm)
+                    ey = int(sy + math.sin(ang) * arm)
+                    pygame.draw.line(screen, col, (sx, sy), (ex, ey), 3)
+                # Diagonal secondary rays
+                arm2 = int(20 * intensity)
+                for k in range(4):
+                    ang = rot + math.pi * 0.25 + k * (math.pi * 0.5)
+                    ex = int(sx + math.cos(ang) * arm2)
+                    ey = int(sy + math.sin(ang) * arm2)
+                    pygame.draw.line(screen, (235, 252, 255), (sx, sy), (ex, ey), 2)
+                pygame.draw.circle(screen, (255, 255, 255), (sx, sy), max(3, int(8 * intensity)))
+
+    def draw_screen_overlay(self, screen):
+        t = self.elapsed
+        if t > 0.36:
+            return
+        if int(t / 0.06) % 2 == 0:
+            sw, sh = screen.get_size()
+            if self._blink_surf is None or self._blink_surf.get_size() != (sw, sh):
+                self._blink_surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
+            self._blink_surf.fill((0, 0, 0, 225))
+            screen.blit(self._blink_surf, (0, 0))
+
+
+class VergilIntroRiftVFX(BaseVFX):
+    """
+    Upgraded DMC5 Vergil Boss Intro Cutscene VFX (paired with 1.40x Camera Zoom-in):
+    - 0.00 .. 1.25s: Vertical blue-violet Dimensional Rift crackling with electric arcs.
+    - 1.25 .. 1.95s: Yamato sheathe-click metallic flash + expanding blue-white shockwave
+      ring + drifting blue-violet energy particles!
+    """
+
+    def __init__(self, vergil_boss, duration=2.0):
+        super().__init__(vergil_boss.pos_x, vergil_boss.pos_y - 54.0, duration=duration, hitbox=None)
+        self.boss = vergil_boss
+        self._canvas = pygame.Surface((260, 260), pygame.SRCALPHA)
+        self.particles = []
+        for i in range(22):
+            ang = (i / 22.0) * math.tau + random.uniform(-0.15, 0.15)
+            spd = random.uniform(45.0, 115.0)
+            sz = random.choice([2, 3, 4])
+            col = random.choice([(95, 235, 255), (155, 95, 255), (235, 252, 255)])
+            self.particles.append((ang, spd, sz, col))
+
+    def update(self, dt=1 / 60):
+        super().update(dt)
+        if self.boss is not None:
+            self.pos_x = float(self.boss.pos_x)
+            self.pos_y = float(self.boss.pos_y - 54.0)
+
+    def draw(self, screen, camera_x=0, camera_y=0):
+        t = self.elapsed
+        sx = int(round(self.pos_x - camera_x))
+        sy = int(round(self.pos_y - camera_y))
+        surf = self._canvas
+        surf.fill((0, 0, 0, 0))
+        cx, cy = 130, 130
+
+        # 1. Vertical Dimensional Rift with crackling blue-violet electric arcs
+        if t < 1.28:
+            rp = math.sin(min(1.0, t / 1.28) * math.pi)
+            rw = max(4, int(38 * rp))
+            rh = max(28, int(172 * min(1.0, t / 0.35)))
+            pygame.draw.ellipse(surf, (85, 50, 230, int(185 * rp)), (cx - rw, cy - rh // 2, rw * 2, rh))
+            pygame.draw.ellipse(
+                surf,
+                (115, 230, 255, int(235 * rp)),
+                (cx - rw // 2, cy - rh // 2 + 8, max(2, rw), max(8, rh - 16)),
+            )
+            pygame.draw.line(surf, (245, 252, 255, int(245 * rp)), (cx, cy - rh // 2), (cx, cy + rh // 2), 2)
+
+            # Crackling jagged electric arcs around rift
+            seed_step = int(t * 22.0)
+            for k in range(5):
+                y_off = -rh // 2 + int(((k + 0.5) / 5.0) * rh)
+                side = 1 if (k + seed_step) % 2 == 0 else -1
+                ax1 = cx + side * (rw // 2)
+                ax2 = cx + side * (rw + 18 + ((seed_step * 7 + k * 13) % 16))
+                ay2 = cy + y_off + (((seed_step + k) % 3) - 1) * 14
+                pygame.draw.line(surf, (135, 240, 255, int(225 * rp)), (ax1, cy + y_off), (ax2, ay2), 2)
+
+        # 2. Yamato Sheathe-Click Metallic Glint + Expanding Shockwave & Drifting Particles
+        if 1.24 <= t <= 1.98:
+            gp = (t - 1.24) / 0.74
+            g_int = math.sin(min(1.0, gp) * math.pi)
+            fade = max(0.0, 1.0 - gp)
+
+            # Expanding blue-white shockwave rings
+            r1 = int(18 + 106 * gp)
+            r2 = int(10 + 74 * gp)
+            pygame.draw.circle(surf, (125, 240, 255, int(235 * fade)), (cx, cy), min(124, r1), 3)
+            pygame.draw.circle(surf, (165, 105, 255, int(195 * fade)), (cx, cy), min(124, r2), 2)
+
+            # Drifting blue-violet particles
+            for ang, spd, sz, col in self.particles:
+                px = int(cx + math.cos(ang) * spd * gp)
+                py = int(cy + math.sin(ang) * spd * gp)
+                if 0 <= px < 260 and 0 <= py < 260:
+                    pygame.draw.rect(surf, (*col, int(240 * fade)), (px - sz // 2, py - sz // 2, sz, sz))
+
+            # Sharp horizontal Yamato blade flash
+            gx = cx + getattr(self.boss, "facing_dir", -1) * 14
+            gy = cy + 6
+            arm = int(56 * g_int)
+            pygame.draw.line(surf, (95, 235, 255, 245), (gx - arm, gy), (gx + arm, gy), 3)
+            pygame.draw.line(surf, (255, 255, 255, 255), (gx, gy - arm // 2), (gx, gy + arm // 2), 2)
+
+        screen.blit(surf, (sx - cx, sy - cy))
+
+
+class RisingSlashVFX(BaseVFX):
+    """Vergil Attack A (High Time / Rising Slash) — upward blue-violet crescent arc."""
+
+    def __init__(self, anchor_entity, forward_offset=38.0, vertical_offset=-58.0, flip=False, duration=0.22, hitbox=None):
+        super().__init__(anchor_entity.pos_x, anchor_entity.pos_y + vertical_offset, duration=duration, hitbox=hitbox)
+        self.anchor_entity = anchor_entity
+        self.forward_offset = float(forward_offset)
+        self.vertical_offset = float(vertical_offset)
+        self.flip = flip
+        self._canvas = pygame.Surface((130, 140), pygame.SRCALPHA)
+
+    def update(self, dt=1 / 60):
+        super().update(dt)
+        if self.anchor_entity and self.anchor_entity.alive():
+            f_dir = -1 if self.flip else 1
+            self.pos_x = self.anchor_entity.pos_x + f_dir * self.forward_offset
+            self.pos_y = self.anchor_entity.pos_y + self.vertical_offset
+            if self.hitbox and self.hitbox.active:
+                self.hitbox.rect.center = (int(round(self.pos_x)), int(round(self.pos_y)))
+
+    def draw(self, screen, camera_x=0, camera_y=0):
+        p = self.progress
+        alpha = max(0, int(255 * (1.0 - p * 0.85)))
+        if alpha <= 8:
+            return
+        surf = self._canvas
+        surf.fill((0, 0, 0, 0))
+        f_dir = -1 if self.flip else 1
+        cx, cy = 65, 70
+        pts = []
+        for i in range(11):
+            ang = math.radians(-115 + i * 21)
+            rx = math.cos(ang) * 44 * f_dir
+            ry = math.sin(ang) * 56
+            pts.append((int(cx + rx), int(cy + ry)))
+        pygame.draw.lines(surf, (135, 75, 255, int(alpha * 0.75)), False, pts, 12)
+        pygame.draw.lines(surf, (75, 225, 255, alpha), False, pts, 6)
+        pygame.draw.lines(surf, (245, 252, 255, alpha), False, pts, 2)
+        sx = int(round(self.pos_x - camera_x))
+        sy = int(round(self.pos_y - camera_y))
+        screen.blit(surf, (sx - cx, sy - cy))
+
+
+class SingleJudgementCutVFX(BaseVFX):
+    """
+    Vergil Attack B — Single Judgement Cut Sphere spawned directly at the player's coordinates:
+    - 0.0 .. windup_time: Pulsing blue-violet warning sphere.
+    - windup_time .. duration: Rapid internal cyan-white slash burst + synced Hitbox.
+    """
+
+    def __init__(self, x, y, radius=88, windup_time=0.46, active_time=0.28, damage=18, hitbox_list=None):
+        super().__init__(x, y, duration=windup_time + active_time, hitbox=None)
+        self.radius = int(radius)
+        self.windup_time = float(windup_time)
+        self.active_time = float(active_time)
+        self.damage = damage
+        self.hitbox_list = hitbox_list
+        self.spawned_hb = False
+        self._canvas = pygame.Surface((radius * 2 + 16, radius * 2 + 16), pygame.SRCALPHA)
+        self.chords = []
+        for _ in range(16):
+            a1 = random.uniform(0.0, math.tau)
+            a2 = a1 + random.uniform(math.pi * 0.6, math.pi * 1.4)
+            self.chords.append((a1, a2))
+
+    def update(self, dt=1 / 60):
+        self.elapsed += dt
+        if self.elapsed >= self.duration:
+            self.destroy()
+            return
+        if not self.spawned_hb and self.elapsed >= self.windup_time:
+            self.spawned_hb = True
+            hb_rect = pygame.Rect(0, 0, int(self.radius * 1.55), int(self.radius * 1.55))
+            hb_rect.center = (int(round(self.pos_x)), int(round(self.pos_y)))
+            hb = Hitbox(
+                owner="boss",
+                rect=hb_rect,
+                damage=self.damage,
+                knockback_x=180.0,
+                lifetime=self.active_time,
+                tag="vergil_judgement_cut",
+            )
+            self.bind_hitbox(hb)
+            if self.hitbox_list is not None:
+                self.hitbox_list.append(hb)
+
+    def draw(self, screen, camera_x=0, camera_y=0):
+        sx = int(round(self.pos_x - camera_x))
+        sy = int(round(self.pos_y - camera_y))
+        r = self.radius
+        c = r + 8
+        surf = self._canvas
+        surf.fill((0, 0, 0, 0))
+
+        if self.elapsed < self.windup_time:
+            wp = self.elapsed / max(0.01, self.windup_time)
+            a = int(90 + 135 * abs(math.sin(self.elapsed * 20.0)))
+            pygame.draw.circle(surf, (45, 55, 165, int(45 + 45 * wp)), (c, c), int(r * (0.45 + 0.55 * wp)))
+            pygame.draw.circle(surf, (115, 225, 255, a), (c, c), r, 2)
+        else:
+            ap = (self.elapsed - self.windup_time) / max(0.01, self.active_time)
+            fade = max(0.0, 1.0 - ap)
+            pygame.draw.circle(surf, (30, 50, 155, int(135 * fade)), (c, c), r)
+            pygame.draw.circle(surf, (135, 240, 255, int(245 * fade)), (c, c), r, 3)
+            step = int(self.elapsed * 30.0)
+            for k in range(8):
+                a1, a2 = self.chords[(step + k * 2) % len(self.chords)]
+                p1 = (int(c + math.cos(a1) * r), int(c + math.sin(a1) * r))
+                p2 = (int(c + math.cos(a2) * r), int(c + math.sin(a2) * r))
+                pygame.draw.line(surf, (145, 85, 255, int(190 * fade)), p1, p2, 5)
+                pygame.draw.line(surf, (235, 252, 255, int(250 * fade)), p1, p2, 2)
+
+        screen.blit(surf, (sx - c, sy - c))
+
+
+class SummonedSwordVFX(BaseVFX):
+    """
+    Vergil Attack C — Summoned Sword (Mirage Blade):
+    - Hovers & aims at the player with a cyan sightline during windup.
+    - Launches at high speed (680 px/s) with a synced parryable Hitbox.
+    """
+
+    def __init__(self, x, y, target_x, target_y, windup=0.42, speed=680.0, duration=1.25, damage=12, hitbox_list=None):
+        super().__init__(x, y, duration=windup + duration, hitbox=None)
+        self.windup = float(windup)
+        self.speed = float(speed)
+        self.damage = damage
+        self.hitbox_list = hitbox_list
+        self.launched = False
+
+        dx = float(target_x) - float(x)
+        dy = float(target_y) - float(y)
+        dist = max(1.0, math.hypot(dx, dy))
+        self.vx = (dx / dist) * self.speed
+        self.vy = (dy / dist) * self.speed
+        self.angle_rad = math.atan2(dy, dx)
+
+        # Build crisp glowing cyan pixel Mirage Blade pointing right, then rotate
+        blade = pygame.Surface((46, 14), pygame.SRCALPHA)
+        pygame.draw.polygon(blade, (35, 165, 255, 210), [(2, 7), (12, 2), (44, 7), (12, 12)])
+        pygame.draw.polygon(blade, (220, 252, 255, 255), [(8, 7), (15, 5), (42, 7), (15, 9)])
+        pygame.draw.rect(blade, (95, 235, 255, 240), (10, 1, 3, 12))
+        self.blade_img = pygame.transform.rotate(blade, -math.degrees(self.angle_rad))
+        self.rect = self.blade_img.get_rect(center=(int(x), int(y)))
+
+    def update(self, dt=1 / 60):
+        self.elapsed += dt
+        if self.elapsed >= self.duration:
+            self.destroy()
+            return
+        if self.elapsed < self.windup:
+            return
+        if not self.launched:
+            self.launched = True
+            from audio_manager import get_audio
+
+            get_audio().play_sfx("mirage_blade")
+            hb_rect = pygame.Rect(0, 0, 28, 22)
+            hb_rect.center = (int(round(self.pos_x)), int(round(self.pos_y)))
+            kb = 200.0 if self.vx >= 0 else -200.0
+            hb = Hitbox(
+                owner="boss",
+                rect=hb_rect,
+                damage=self.damage,
+                knockback_x=kb,
+                lifetime=None,
+                tag="vergil_summoned_sword",
+            )
+            self.bind_hitbox(hb)
+            if self.hitbox_list is not None:
+                self.hitbox_list.append(hb)
+
+        self.pos_x += self.vx * dt
+        self.pos_y += self.vy * dt
+        self.rect.center = (int(round(self.pos_x)), int(round(self.pos_y)))
+        if self.hitbox and self.hitbox.active:
+            self.hitbox.rect.center = self.rect.center
+
+    def draw(self, screen, camera_x=0, camera_y=0):
+        sx = int(round(self.pos_x - camera_x))
+        sy = int(round(self.pos_y - camera_y))
+        if self.elapsed < self.windup:
+            ex = int(sx + math.cos(self.angle_rad) * 280)
+            ey = int(sy + math.sin(self.angle_rad) * 280)
+            pygame.draw.line(screen, (60, 225, 255), (sx, sy), (ex, ey), 1)
+        screen.blit(self.blade_img, self.blade_img.get_rect(center=(sx, sy)))
+
+
+
+
+

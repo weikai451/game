@@ -37,8 +37,10 @@ class Player(pygame.sprite.Sprite):
         self.jump_velocity = PLAYER_JUMP_VELOCITY
         self.player_jump_power = PLAYER_JUMP_VELOCITY
         self.gravity = GRAVITY
+        self.velocity_x = 0.0
         self.velocity_y = 0.0
         self.knockback_vel_x = 0.0
+        self.holding_move_key = False
         self.ground_y = ground_y
         self.game_map = None
         self.air_stay_timer = 0.0          # Low-gravity hover timer after Pogo hit
@@ -66,6 +68,10 @@ class Player(pygame.sprite.Sprite):
         self.neon_aura_timer = 0.0
 
         self.invincible_timer = 0.0
+        self.parry_cancel_timer = 0.0  # Real-time 0.10s post-parry action cancel window
+        self._prev_anim_state = "idle"
+        self.sans_kr_tick_timer = 0.0  # Continuous 1-DMG KR tick interval (0.024s) for Sans attacks
+        self.kr_flash_timer = 0.0      # Purple Karma (KR) visual flash on Sans hit
         self.status_text = ""
         self.status_timer = 0.0
 
@@ -322,6 +328,9 @@ class Player(pygame.sprite.Sprite):
             self.air_stay_timer = 0.0
             self.pogo_bounce_count = 0
             self.animator.play("Jump", force_reset=True)
+            from audio_manager import get_audio
+
+            get_audio().play_sfx("jump")
 
     def start_block(self):
         if self.is_attacking:
@@ -343,6 +352,12 @@ class Player(pygame.sprite.Sprite):
             self.parry_cooldown = PARRY_COOLDOWN
 
     def attack(self, down_pressed=None):
+        if self.parry_cancel_timer > 0.0:
+            return
+        # Allow instant Action Cancel out of block right after a Perfect Parry!
+        if self.is_blocking and self.parry_damage_buff:
+            self.is_blocking = False
+            self.parry_timer = 0.0
         if not self.is_attacking and not self.is_blocking:
             if down_pressed is None:
                 keys = pygame.key.get_pressed()
@@ -357,6 +372,10 @@ class Player(pygame.sprite.Sprite):
             )
             anim_name = "AirDownAttack" if self.is_down_slashing else "Attack"
             self.animator.play(anim_name, force_reset=True)
+            self._prev_anim_state = anim_name
+            from audio_manager import get_audio
+
+            get_audio().play_sfx("down_slash" if self.is_down_slashing else "slash")
 
     def on_pogo_hit(self, vfx_group=None):
         if self.pogo_bounce_count < MAX_POGO_BOUNCES:
@@ -369,6 +388,9 @@ class Player(pygame.sprite.Sprite):
 
             if vfx_group is not None:
                 vfx_group.add(PogoBounceVFX(self.pos_x, self.pos_y + 10))
+            from audio_manager import get_audio
+
+            get_audio().play_sfx("pogo_bounce")
 
             self.status_text = (
                 f"POGO BOUNCE! ({self.pogo_bounce_count}/{MAX_POGO_BOUNCES})"
@@ -507,6 +529,21 @@ class Player(pygame.sprite.Sprite):
                 if attack_rect.colliderect(enemy.hurtbox):
                     enemy.be_attacked()
 
+    def is_completely_still(self) -> bool:
+        """
+        Undertale Blue Attack rule:
+        Returns True ONLY when the player is standing completely still on the ground
+        with zero horizontal/vertical velocity, no directional keys held, and not attacking/jumping.
+        """
+        return (
+            self.on_ground
+            and not self.is_jumping
+            and not self.is_attacking
+            and not self.holding_move_key
+            and abs(self.velocity_x) < 0.1
+            and abs(self.velocity_y) < 0.1
+        )
+
     def take_hit(self, hitbox, attacker=None, vfx_group=None):
         if self.is_teleporting:
             return "ignored"
@@ -523,8 +560,13 @@ class Player(pygame.sprite.Sprite):
                 spark_x = self.parry_box.centerx
 
             if self.is_parrying:
+                # Auto-release block & unlock animation so player can immediately cancel into counter-attack!
+                self.is_blocking = False
+                self.is_attacking = False
+                self._clear_attack_hitbox()
                 self.parry_timer = 0.0
                 self.parry_cooldown = 0.0
+                self.parry_cancel_timer = 0.10
                 self.invincible_timer = 0.35
                 self.parry_damage_buff = True
                 self.parry_buff_timer = PARRY_BUFF_DURATION
@@ -532,6 +574,9 @@ class Player(pygame.sprite.Sprite):
                 self.neon_aura_timer = 0.85
                 self.status_text = "PERFECT PARRY!"
                 self.status_timer = 0.95
+                from audio_manager import get_audio
+
+                get_audio().play_sfx("perfect_parry")
 
                 if vfx_group is not None:
                     vfx_group.add(
@@ -563,6 +608,9 @@ class Player(pygame.sprite.Sprite):
                 push_dir = -1 if (attacker and attacker.pos_x > self.pos_x) else 1
                 self.knockback_vel_x = push_dir * BLOCK_KNOCKBACK_SPEED
                 self.status_timer = 0.65
+                from audio_manager import get_audio
+
+                get_audio().play_sfx("block")
                 if vfx_group is not None:
                     vfx_group.add(
                         ParrySparkVFX(
@@ -575,12 +623,36 @@ class Player(pygame.sprite.Sprite):
                     )
                 return "block"
 
+        # Authentic Undertale Sans rule: NO invincibility frames!
+        # Continuous 1-DMG Karma (KR) drain every 0.04s while overlapping Sans's hitboxes.
+        is_sans_attack = getattr(hitbox, "tag", "").startswith("sans_")
+        if is_sans_attack:
+            if self.sans_kr_tick_timer > 0.0:
+                return "ignored"
+            # 40% faster continuous KR drain interval (0.04 * 0.6 = 0.024s)
+            self.sans_kr_tick_timer = 0.024
+            self.kr_flash_timer = 0.14
+            dmg = max(1, int(round(hitbox.damage)))
+            if not self.god_mode:
+                self.player_hp = max(0, self.player_hp - dmg)
+                self.status_text = f"-{dmg} KR"
+                from audio_manager import get_audio
+
+                get_audio().play_sfx("player_death" if self.player_hp <= 0 else "player_hurt")
+            else:
+                self.status_text = "KR HIT [GOD MODE: 0 DMG]"
+            self.status_timer = 0.35
+            return "kr_hit"
+
         if self.invincible_timer > 0.0:
             return "ignored"
 
         if not self.god_mode:
             self.player_hp = max(0, self.player_hp - int(round(hitbox.damage)))
             self.status_text = f"-{int(round(hitbox.damage))} HP"
+            from audio_manager import get_audio
+
+            get_audio().play_sfx("player_death" if self.player_hp <= 0 else "player_hurt")
         else:
             self.status_text = "HIT! [GOD MODE: 0 DMG]"
             print(
@@ -590,6 +662,13 @@ class Player(pygame.sprite.Sprite):
         self.invincible_timer = PLAYER_IFRAME_DURATION
         push_dir = -1 if (attacker and attacker.pos_x > self.pos_x) else 1
         self.knockback_vel_x = push_dir * (BLOCK_KNOCKBACK_SPEED * 0.85)
+        kb_y = getattr(hitbox, "knockback_y", 0.0)
+        if kb_y < 0.0:
+            # Launch player upward into the air (e.g., Vergil Rising Slash / High Time)
+            self.velocity_y = float(kb_y)
+            self.on_ground = False
+            self.on_one_way_platform = False
+            self.is_jumping = True
         self.status_timer = 0.60
         return "hit"
 
@@ -724,6 +803,12 @@ class Player(pygame.sprite.Sprite):
             self.air_stay_timer = max(0.0, self.air_stay_timer - raw_dt)
         if self.drop_through_timer > 0.0:
             self.drop_through_timer = max(0.0, self.drop_through_timer - raw_dt)
+        if self.parry_cancel_timer > 0.0:
+            self.parry_cancel_timer = max(0.0, self.parry_cancel_timer - raw_dt)
+        if self.sans_kr_tick_timer > 0.0:
+            self.sans_kr_tick_timer = max(0.0, self.sans_kr_tick_timer - raw_dt)
+        if self.kr_flash_timer > 0.0:
+            self.kr_flash_timer = max(0.0, self.kr_flash_timer - raw_dt)
 
         # 1.5s 1.35x Parry Damage Buff countdown (ticks down after slow-motion ends)
         if self.parry_buff_timer > 0.0:
@@ -781,6 +866,7 @@ class Player(pygame.sprite.Sprite):
             if not self.is_attacking:
                 self.flip = False
 
+        self.holding_move_key = is_moving
         dx = move_dir_x * move_speed * dt
         if abs(self.knockback_vel_x) > 5.0:
             dx += self.knockback_vel_x * dt
@@ -788,10 +874,13 @@ class Player(pygame.sprite.Sprite):
         else:
             self.knockback_vel_x = 0.0
 
+        self.velocity_x = (dx / dt) if dt > 1e-6 else 0.0
+
         grav_scale = (
             PLAYER_AIR_STAY_GRAVITY_SCALE if self.air_stay_timer > 0.0 else 1.0
         )
 
+        was_on_ground = self.on_ground
         # 4. Map Collision Resolution (Solid Tiles, One-Way / Drop-Through Platforms & Polygons)
         has_map_geometry = bool(
             self.game_map
@@ -856,7 +945,16 @@ class Player(pygame.sprite.Sprite):
                     self.air_stay_timer = 0.0
                     self.pogo_bounce_count = 0
 
-        # 5. State & Animation update
+        # 5. State & Animation update + Footstep / Landing SFX
+        if not was_on_ground and self.on_ground:
+            from audio_manager import get_audio
+
+            get_audio().play_sfx("land")
+        elif self.on_ground and is_moving and not self.is_attacking:
+            from audio_manager import get_audio
+
+            get_audio().play_sfx("footstep")
+
         new_state = "idle"
         loop_anim = True
 
@@ -870,8 +968,15 @@ class Player(pygame.sprite.Sprite):
             new_state = "Run"
 
         current_fspeed = self.animation_speed[new_state]
-        self.animator.play(new_state)
-        dt_scale = dt * 60.0
+        if new_state != self._prev_anim_state:
+            self.animator.play(new_state, force_reset=True)
+            self._prev_anim_state = new_state
+        else:
+            self.animator.play(new_state)
+
+        # Keep player's own animations responsive during Bullet Time so attacks/jumps never stall!
+        anim_dt = max(dt, raw_dt * 0.72)
+        dt_scale = anim_dt * 60.0
         self.image = self.animator.update_get_image(
             current_fspeed, dt_scale=dt_scale, loop=loop_anim
         )
@@ -909,6 +1014,9 @@ class Player(pygame.sprite.Sprite):
         elif self.is_blocking:
             self.image = self.image.copy()
             self.image.fill((30, 70, 150), special_flags=pygame.BLEND_RGB_ADD)
+        elif self.kr_flash_timer > 0.0:
+            self.image = self.image.copy()
+            self.image.fill((195, 45, 235), special_flags=pygame.BLEND_RGB_ADD)
         elif self.invincible_timer > 0.0:
             if int(self.invincible_timer * 20) % 2 == 0:
                 self.image = self.image.copy()

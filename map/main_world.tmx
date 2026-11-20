@@ -59,13 +59,19 @@
     <property name="one_way" type="bool" value="true"/>
    </properties>
   </object>
+  <!-- Elevated Pogo Shortcut Platform above Slimer Practice Zone 2 (2x Pogo reach from y=688) -->
+  <object id="34" x="2472" y="488" width="160" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
 
-  <!-- Portal to Boss 1 Arena (Sans) -->
+  <!-- Portal to Stage 2: Sans Boss Arena (Unlocked after clearing all Slimers) -->
   <object id="20" x="2560" y="480" width="128" height="208">
    <properties>
-    <property name="spawn_x" type="int" value="280"/>
-    <property name="spawn_y" type="int" value="656"/>
-    <property name="target" value="boss1_arena.tmx"/>
+    <property name="spawn_x" type="int" value="260"/>
+    <property name="spawn_y" type="int" value="784"/>
+    <property name="target" value="sans_arena.tmx"/>
    </properties>
   </object>
  </objectgroup>

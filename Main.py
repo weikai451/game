@@ -24,11 +24,13 @@ from transition_system import (
     TransitionManager,
     change_map,
 )
-from checkpoint import load_checkpoints
+from checkpoint import load_checkpoints, Checkpoint
 from menu import Menu
 from tutorial_system import GuidedTutorialManager
 import Player
 from bosses import Sans, Vergil
+from enemies import Slimer
+from audio_manager import get_audio
 from VFX import draw_debug_boxes, HealVFX, PortalTeleportVFX
 
 
@@ -54,14 +56,19 @@ class Game:
         pygame.display.set_caption("Final Project - Hollow Action")
         self.clock = pygame.time.Clock()
         self.running = True
+        self.audio = get_audio()
 
         # Global pixel fonts (rendered with antialias=False)
         self.font_big = get_pixel_font(55)
         self.font_small = get_pixel_font(22)
         self.font_hud = get_pixel_font(16)
         self.font_prompt = get_pixel_font(16)
+        # Crisp pixel fonts (antialias=False) for programmatic Boss Title Card ('The weakest ?' / 'Sans')
+        self.font_title_sub = get_pixel_font(40)
+        self.font_title_main = get_pixel_font(96)
+        self.title_card_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 
-        # Load background image
+        # Load default & dedicated Sans Judgement Hall background images
         try:
             if os.path.exists("Background/cloud_back .jpg"):
                 bg_img = pygame.image.load("Background/cloud_back .jpg").convert()
@@ -73,6 +80,15 @@ class Game:
         except Exception:
             self.background = pygame.Surface((WIDTH, HEIGHT))
             self.background.fill((20, 20, 35))
+
+        try:
+            if os.path.exists("assets/backgrounds/sans_bg.png"):
+                sans_raw = pygame.image.load("assets/backgrounds/sans_bg.png").convert()
+                self.sans_background = pygame.transform.scale(sans_raw, (WIDTH, HEIGHT))
+            else:
+                self.sans_background = self.background
+        except Exception:
+            self.sans_background = self.background
 
         # Dedicated World Surface for 1.15x Camera Zoom-in (decoupled from top-layer HUD)
         self.world_surface = pygame.Surface((WIDTH, HEIGHT))
@@ -93,12 +109,17 @@ class Game:
             thickness = random.choice([2, 2, 3, 4])
             self.speed_line_specs.append((ang, inner_ratio, thickness))
 
-        # Main Menu & Pause Menu (100% English UI)
+        # Main Menu & Pause Menu (100% English Pixel UI + Categorized Volume Sliders)
         self.main_menu = Menu("HOLLOW ACTION", ["START", "QUIT"])
         self.pause_menu = Menu(
             "PAUSED",
             ["BACK TO GAME", "RESTART", "MAIN MENU", "QUIT"],
             fill_background=False,
+            sliders=[
+                {"key": "master", "label": "MASTER VOLUME"},
+                {"key": "bgm", "label": "BGM / MUSIC"},
+                {"key": "sfx", "label": "SFX / COMBAT"},
+            ],
         )
 
         # Camera offset & zoom state
@@ -132,11 +153,19 @@ class Game:
         self.victory_timer = 0.0
         self.main_boss_defeated = False
 
-        # Bullet Time, Hitstop, and Screen Dimming timers
+        # Bullet Time, Hitstop, Screen Dimming, Screen Shake & Stage Clear timers
         self.time_scale = 1.0
         self.bullet_time_timer = 0.0
         self.hitstop_timer = 0.0
         self.screen_dim_timer = 0.0
+        self.screen_shake_timer = 0.0
+        self.screen_shake_intensity = 7.0
+        self.intro_letterbox_ratio = 0.0
+        self.boss_defeated = {"sans": False, "vergil": False}
+        self.cleared_stages = {}
+        self.level_cleared = False
+        self.stage_cleared = False
+        self.portal_unlock_banner_timer = 0.0
 
         self.current_map_path = MAIN_WORLD_PATH
         self.game_map = None
@@ -172,12 +201,46 @@ class Game:
     def map_name(self):
         return os.path.basename(self.current_map_path).lower()
 
-    def is_boss_arena(self):
+    def is_sans_arena(self):
+        return "sans_arena" in self.map_name()
+
+    def is_vergil_arena(self):
         name = self.map_name()
         return any(k in name for k in BOSS_ARENA_KEYWORDS)
 
+    def is_boss_arena(self):
+        return self.is_sans_arena() or self.is_vergil_arena()
+
+    def is_boss_intro_active(self):
+        """True while the current Boss is playing its opening INTRO cutscene."""
+        return bool(
+            self.boss is not None
+            and self.boss.alive()
+            and getattr(self.boss, "state", "") == "INTRO"
+        )
+
     def is_main_world(self):
         return "main_world" in self.map_name()
+
+    def check_stage_clear_condition(self):
+        """
+        Evaluate the current stage's Portal unlock condition:
+        - Tutorial: Gate 2 open (Parry Guardian defeated & all tutorial stages cleared)
+        - Stage 1 (Slime Exploration): All Slimer enemies defeated
+        - Stage 2 (Sans) & Stage 3 (Vergil): Boss defeated (is_dead == True)
+        """
+        if self.is_tutorial:
+            return bool(
+                self.tutorial_manager is not None
+                and getattr(self.tutorial_manager, "gate2_open", False)
+            )
+        if self.is_main_world():
+            return len(self.regular_enemies) == 0
+        if self.is_boss_arena():
+            return self.boss is not None and (
+                getattr(self.boss, "is_dead", False) or not self.boss.alive()
+            )
+        return True
 
     def get_floor_y_at(self, x: float, default=640) -> int:
         """
@@ -244,7 +307,23 @@ class Game:
             )
         return triggers
 
-    def spawn_boss(self, boss_cls=Sans, floor_y=None, start_x=380):
+    def _rebuild_sprite_groups(self):
+        """
+        Keep self.enemies and self.all_sprites cleanly synced across Player, Boss, and Slimers.
+        NOTE: Check HP (> 0) rather than pygame.sprite.Sprite.alive(), because a newly
+        instantiated Sprite has alive() == False until it is added to a Sprite Group!
+        """
+        self.enemies = pygame.sprite.Group()
+        self.all_sprites = pygame.sprite.Group(self.player)
+        if self.boss is not None and getattr(self.boss, "boss_health", 0) > 0:
+            self.enemies.add(self.boss)
+            self.all_sprites.add(self.boss)
+        for mob in self.regular_enemies:
+            if getattr(mob, "hp", 0) > 0:
+                self.enemies.add(mob)
+                self.all_sprites.add(mob)
+
+    def spawn_boss(self, boss_cls=Sans, floor_y=None, start_x=1520):
         """Spawn the specified Boss class (Sans for Level 1, Vergil for Level 2) with map collision binding."""
         if floor_y is None:
             floor_y = self.get_floor_y_at(start_x, default=640)
@@ -254,15 +333,63 @@ class Game:
             ground_y=floor_y,
             game_map=self.game_map,
         )
-        self.enemies = pygame.sprite.Group(self.boss)
-        self.all_sprites = pygame.sprite.Group(self.player, self.boss)
+        self._rebuild_sprite_groups()
+        if self.hud is not None:
+            self.hud.boss = self.boss
+            self.hud.boss_display_hp = float(self.boss.boss_health)
 
-    def reset_level_enemies(self):
+    def _get_regular_enemy_spawn_specs(self):
         """
-        Soul-like Enemy & Boss State Reset (called on player death respawn or Checkpoint rest):
-        1. Clear all lingering hitboxes and enemy projectiles/VFX
-        2. Restore Boss to full HP, initial spawn position, and IDLE state (or re-spawn if killed)
+        Return regular enemy (Slimer) spawn specs for the current map:
+        - Main World Practice Zone 1 (before Checkpoint 1 & Sans): 2 Slimers spaced 170px apart
+          below the y=560 / y=496 one-way platforms for 2x Pogo bounce practice.
+        - Main World Practice Zone 2 (between Checkpoint 2 & Level 2 Vergil Portal): 2 Slimers
+          spaced 155px apart below the y=584 / y=488 one-way shortcut platforms.
         """
+        if self.is_main_world():
+            return [
+                (Slimer, 560.0, 640.0, 95.0),
+                (Slimer, 730.0, 640.0, 95.0),
+                (Slimer, 2290.0, 688.0, 80.0),
+                (Slimer, 2445.0, 688.0, 80.0),
+            ]
+        return []
+
+    def respawn_regular_enemies(self):
+        """
+        Respawn ONLY regular enemies (Slimers) at their initial spawn_pos with full HP & PATROL state.
+        NEVER resets or alters the current Boss (Sans / Vergil) — used by Checkpoint [E] Save & Heal!
+        """
+        for mob in list(self.regular_enemies):
+            if hasattr(mob, "_clear_contact_hitbox"):
+                mob._clear_contact_hitbox()
+            mob.kill()
+        self.regular_enemies.empty()
+
+        self.regular_enemy_spawns = self._get_regular_enemy_spawn_specs()
+        for enemy_cls, sx, default_y, patrol_range in self.regular_enemy_spawns:
+            floor_y = self.get_floor_y_at(sx, default=int(default_y))
+            mob = enemy_cls(
+                self.player,
+                start_x=sx,
+                ground_y=floor_y,
+                game_map=self.game_map,
+                patrol_range=patrol_range,
+            )
+            self.regular_enemies.add(mob)
+
+        self._rebuild_sprite_groups()
+
+    def reset_level_enemies(self, include_boss=True):
+        """
+        Enemy & Boss State Reset:
+        - Always respawns regular enemies (Slimers) at their spawn_pos.
+        - Only resets Boss when include_boss=True (used on Player Death Respawn).
+        """
+        if not include_boss:
+            self.respawn_regular_enemies()
+            return
+
         self.active_hitboxes.clear()
         for vfx in list(self.vfx_group):
             if not isinstance(vfx, (HealVFX, PortalTeleportVFX)):
@@ -271,43 +398,65 @@ class Game:
         if self.is_tutorial:
             return
 
-        if self.is_boss_arena():
-            px = getattr(self.player, "pos_x", 260.0)
-            boss_x = min(float(self.game_map.width - 260), px + 420.0)
-            floor_y = self.get_floor_y_at(boss_x, default=656)
-            if (
-                self.boss is not None
-                and isinstance(self.boss, Vergil)
-                and self.boss.alive()
-            ):
-                self.boss.game_map = self.game_map
-                self.boss.spawn_x = float(boss_x)
-                self.boss.spawn_y = float(floor_y)
-                self.boss.reset()
-            else:
-                self.spawn_boss(boss_cls=Vergil, floor_y=floor_y, start_x=boss_x)
-        elif self.is_main_world():
-            self.main_boss_defeated = False
-            boss_x = 380.0
-            floor_y = self.get_floor_y_at(boss_x, default=640)
-            if (
-                self.boss is not None
-                and isinstance(self.boss, Sans)
-                and self.boss.alive()
-            ):
-                self.boss.game_map = self.game_map
-                self.boss.spawn_x = float(boss_x)
-                self.boss.spawn_y = float(floor_y)
-                self.boss.reset()
-            else:
-                self.spawn_boss(boss_cls=Sans, floor_y=floor_y, start_x=boss_x)
+        self.respawn_regular_enemies()
 
-        if self.hud is not None and self.boss is not None:
+        if self.is_sans_arena():
+            if self.boss_defeated.get("sans", False):
+                # Sans is already defeated — NEVER resurrect him on Checkpoint respawn!
+                self.boss = None
+                self.spawn_boss_victory_checkpoint()
+                self.audio.stop_bgm(fadeout_ms=400)
+            else:
+                boss_x = 1180.0
+                floor_y = self.get_floor_y_at(boss_x, default=784)
+                if (
+                    self.boss is not None
+                    and isinstance(self.boss, Sans)
+                    and self.boss.alive()
+                ):
+                    self.boss.game_map = self.game_map
+                    self.boss.spawn_x = float(boss_x)
+                    self.boss.spawn_y = float(floor_y)
+                    self.boss.reset()
+                else:
+                    self.spawn_boss(boss_cls=Sans, floor_y=floor_y, start_x=boss_x)
+        elif self.is_vergil_arena():
+            if self.boss_defeated.get("vergil", False):
+                # Vergil is already defeated — NEVER resurrect him on Checkpoint respawn!
+                self.boss = None
+                self.spawn_boss_victory_checkpoint()
+                self.audio.stop_bgm(fadeout_ms=400)
+            else:
+                px = getattr(self.player, "pos_x", 280.0)
+                boss_x = min(float(self.game_map.width - 260), max(860.0, px + 420.0))
+                floor_y = self.get_floor_y_at(boss_x, default=656)
+                if (
+                    self.boss is not None
+                    and isinstance(self.boss, Vergil)
+                    and self.boss.alive()
+                ):
+                    self.boss.game_map = self.game_map
+                    self.boss.spawn_x = float(boss_x)
+                    self.boss.spawn_y = float(floor_y)
+                    self.boss.reset()
+                else:
+                    self.spawn_boss(boss_cls=Vergil, floor_y=floor_y, start_x=boss_x)
+        elif self.is_main_world():
+            # Stage 1 is dedicated to Slimer exploration & Pogo practice (no Boss)
+            self.boss = None
+
+        self._rebuild_sprite_groups()
+
+        if self.hud is not None:
             self.hud.boss = self.boss
-            self.hud.boss_display_hp = float(self.boss.boss_health)
+            self.hud.boss_display_hp = (
+                float(self.boss.boss_health) if self.boss is not None else 0.0
+            )
 
     def update_camera(self):
-        if self.is_boss_arena():
+        # Stage 3 (Vergil 1376x768) uses fixed centered camera;
+        # Stage 2 (Sans 1.2x expanded 1664x928) & Stage 1 smoothly follow player within map bounds!
+        if self.is_vergil_arena():
             self.camera_x = (self.game_map.width - WIDTH) // 2
             self.camera_y = (self.game_map.height - HEIGHT) // 2
         else:
@@ -316,39 +465,110 @@ class Game:
                 player_rect, WIDTH, HEIGHT
             )
 
+    def spawn_boss_victory_checkpoint(self):
+        """
+        Dynamically spawn an interactive Checkpoint ([E] Save & Heal) on safe ground
+        beside the Arena Exit Portal after defeating a Boss (Sans / Vergil).
+        """
+        # Avoid spawning duplicate dynamic victory checkpoints
+        if any(getattr(cp, "is_boss_victory_cp", False) for cp in self.checkpoints):
+            return
+
+        if self.triggers:
+            portal_cx = self.triggers[0].rect.centerx
+            cp_x = max(160.0, float(portal_cx - 150))
+        else:
+            cp_x = float(self.game_map.width * 0.5)
+
+        default_y = 784 if self.is_sans_arena() else 656
+        floor_y = self.get_floor_y_at(cp_x, default=default_y)
+        cp_rect = pygame.Rect(0, 0, 56, 96)
+        cp_rect.midbottom = (int(round(cp_x)), int(floor_y))
+
+        next_order = max((cp.order for cp in self.checkpoints), default=10) + 1
+        cp = Checkpoint(order=next_order, rect=cp_rect, name="Victory Checkpoint")
+        cp.is_boss_victory_cp = True
+        self.checkpoints.append(cp)
+
+        if self.vfx_group is not None:
+            self.vfx_group.add(HealVFX(cp.spawn_pos[0], cp.spawn_pos[1], duration=0.95))
+        print(f"[Boss Victory] Dynamic Checkpoint spawned at {cp.spawn_pos}")
+
     def setup_map_state(self):
-        """Configure Boss, Guided Tutorial, Checkpoints, Portals, and HUD for the loaded map"""
-        self.is_tutorial = "tutorial" in self.map_name()
+        """Configure Stage (Tutorial / Stage 1 Slime / Stage 2 Sans / Stage 3 Vergil), Checkpoints, Portals & HUD"""
+        map_key = self.map_name()
+        self.is_tutorial = "tutorial" in map_key
         self.victory_timer = 0.0
+        # Persist per-stage level_cleared flag across Checkpoint refreshes & death respawns!
+        self.level_cleared = bool(self.cleared_stages.get(map_key, False))
+        self.stage_cleared = self.level_cleared
+        self.portal_unlock_banner_timer = 0.0
         self.tutorial_manager = None
 
-        # Load checkpoints from the current .tmx map (works for both Tutorial Stage 5 and Main World)
+        # Load checkpoints from the current .tmx map
         self.checkpoints = load_checkpoints(
             self.resolve_map_path(self.current_map_path)
         )
 
         if self.is_tutorial:
             self.boss = None
+            self.regular_enemies.empty()
             self.enemies = pygame.sprite.Group()
             self.all_sprites = pygame.sprite.Group(self.player)
             self.tutorial_manager = GuidedTutorialManager(self)
-        elif self.is_boss_arena():
-            # Level 2 Boss Arena: Spawn VERGIL
-            px = getattr(self.player, "pos_x", 260.0)
-            boss_x = min(float(self.game_map.width - 260), px + 420.0)
-            floor_y = self.get_floor_y_at(boss_x, default=656)
-            self.spawn_boss(boss_cls=Vergil, floor_y=floor_y, start_x=boss_x)
-        elif self.is_main_world() and not self.main_boss_defeated:
-            # Level 1 Main World: Spawn SANS
-            boss_x = 380.0
-            floor_y = self.get_floor_y_at(boss_x, default=640)
-            self.spawn_boss(boss_cls=Sans, floor_y=floor_y, start_x=boss_x)
+        elif self.is_sans_arena():
+            # Stage 2 Dedicated 1.2x Sans Boss Arena: Spawn SANS only if not yet defeated
+            self.regular_enemies.empty()
+            if not self.boss_defeated.get("sans", False) and not self.level_cleared:
+                boss_x = 1180.0
+                floor_y = self.get_floor_y_at(boss_x, default=784)
+                self.spawn_boss(boss_cls=Sans, floor_y=floor_y, start_x=boss_x)
+            else:
+                self.boss = None
+                self.level_cleared = True
+                self.stage_cleared = True
+                self._rebuild_sprite_groups()
+        elif self.is_vergil_arena():
+            # Stage 3 Final Boss Arena: Spawn VERGIL only if not yet defeated
+            self.regular_enemies.empty()
+            if not self.boss_defeated.get("vergil", False) and not self.level_cleared:
+                px = getattr(self.player, "pos_x", 280.0)
+                boss_x = min(float(self.game_map.width - 260), max(860.0, px + 420.0))
+                floor_y = self.get_floor_y_at(boss_x, default=656)
+                self.spawn_boss(boss_cls=Vergil, floor_y=floor_y, start_x=boss_x)
+            else:
+                self.boss = None
+                self.level_cleared = True
+                self.stage_cleared = True
+                self._rebuild_sprite_groups()
+        elif self.is_main_world():
+            # Stage 1: Slime Exploration & Pogo Practice (NO Sans here!)
+            self.boss = None
+            self.respawn_regular_enemies()
         else:
             self.boss = None
+            self.regular_enemies.empty()
             self.enemies = pygame.sprite.Group()
             self.all_sprites = pygame.sprite.Group(self.player)
 
         self.triggers = self._convert_tiled_portals_to_triggers()
+
+        # If this stage was already cleared earlier, keep all Portals permanently unlocked!
+        if self.level_cleared:
+            for trigger in self.triggers:
+                trigger.unlocked = True
+                trigger.unlock_anim_timer = 0.65
+            if self.is_boss_arena():
+                self.spawn_boss_victory_checkpoint()
+                self.audio.stop_bgm(fadeout_ms=1100)
+
+        # Manage Boss Arena BGM (Sans Megalovania at 20% lower base vol 0.32 / Vergil Theme 0.40)
+        if self.is_sans_arena() and not self.boss_defeated.get("sans", False) and not self.level_cleared:
+            self.audio.play_bgm("sans_theme", volume=0.32)
+        elif self.is_vergil_arena() and not self.boss_defeated.get("vergil", False) and not self.level_cleared:
+            self.audio.play_bgm("vergil_theme", volume=0.40)
+        else:
+            self.audio.stop_bgm(fadeout_ms=900)
 
         if self.hud is not None:
             self.hud.reset(self.player, self.boss, is_tutorial=self.is_tutorial)
@@ -378,6 +598,9 @@ class Game:
             self.checkpoints = []
             self.active_checkpoint = None
             self.main_boss_defeated = False
+            self.boss_defeated = {"sans": False, "vergil": False}
+            self.cleared_stages = {}
+            self.level_cleared = False
             self.respawn_map_path = map_path
             self.respawn_position = (spawn_x, spawn_y)
         self.checkpoint_msg_timer = 0.0
@@ -389,6 +612,8 @@ class Game:
         self.player.sync_boxes()
 
         self.boss = None
+        self.regular_enemies = pygame.sprite.Group()
+        self.regular_enemy_spawns = []
         self.enemies = pygame.sprite.Group()
         self.all_sprites = pygame.sprite.Group(self.player)
         self.vfx_group = pygame.sprite.Group()
@@ -475,6 +700,7 @@ class Game:
                 self.player.full_heal()
                 self.player.parry_cooldown = 0.0
                 self.player.pogo_bounce_count = 0
+                self.audio.play_sfx("checkpoint_heal")
 
                 self.vfx_group.add(
                     HealVFX(self.player.pos_x, self.player.pos_y, duration=0.90)
@@ -483,9 +709,11 @@ class Game:
                     HealVFX(cp.spawn_pos[0], cp.spawn_pos[1], duration=0.90)
                 )
 
-                self.reset_level_enemies()
+                # Checkpoint [E] Save & Heal ONLY respawns regular enemies (Slimers),
+                # preserving Boss HP, position, and defeated state!
+                self.respawn_regular_enemies()
                 print(
-                    f"[Checkpoint] Saved & Healed at {cp.name} {cp.spawn_pos}, Stage Enemies Reset."
+                    f"[Checkpoint] Saved & Healed at {cp.name} {cp.spawn_pos}, Regular Enemies Respawned (Boss Preserved)."
                 )
                 return
 
@@ -496,6 +724,7 @@ class Game:
             )
             if portal_trigger is not None:
                 self.player.is_teleporting = True
+                self.audio.play_sfx("portal_warp")
                 self.vfx_group.add(
                     PortalTeleportVFX(
                         self.player.pos_x,
@@ -523,10 +752,16 @@ class Game:
 
         player_rect = self.player.collision_rect
         for cp in self.checkpoints:
+            was_in = cp.can_interact
             cp.update(raw_dt, player_rect)
+            if not was_in and cp.can_interact:
+                self.audio.play_sfx("prompt_pop")
 
         for trigger in self.triggers:
+            was_in = trigger.can_interact
             trigger.update(raw_dt, player_rect)
+            if not was_in and trigger.can_interact and trigger.unlocked:
+                self.audio.play_sfx("prompt_pop")
 
     def get_respawn_target(self):
         if self.active_checkpoint is not None:
@@ -563,41 +798,14 @@ class Game:
         print(f"[Soul-like Respawn] Respawning at {target_map} {spawn_pos}")
 
     def handle_boss_arena_outcome(self, raw_dt):
+        """
+        In Boss Arenas (Stage 2 Sans / Stage 3 Vergil):
+        - Player death triggers Soul-like respawn at last Checkpoint.
+        - Boss defeat unlocks the Arena Exit Portal (no abrupt auto-teleport).
+        """
         if self.player.player_hp <= 0 and not self.debug_mode:
             self.start_death_respawn()
             return True
-
-        if self.boss is not None and not self.boss.alive():
-            self.victory_timer += raw_dt
-            if self.victory_timer >= VICTORY_RETURN_DELAY:
-                self.victory_timer = 0.0
-                self.main_boss_defeated = True
-                cp = self.get_next_checkpoint()
-                if cp is not None:
-                    self.active_checkpoint = cp
-                    cp.activated = True
-                    spawn = cp.spawn_pos
-                    self.respawn_map_path = MAIN_WORLD_PATH
-                    self.respawn_position = spawn
-                else:
-                    spawn = (140, 640)
-
-                ret_trigger = MapTrigger(
-                    rect=(0, 0, 0, 0),
-                    target_map=MAIN_WORLD_PATH,
-                    spawn_pos=spawn,
-                )
-                self.player.is_teleporting = True
-                focus_screen = (
-                    int(self.player.pos_x - self.camera_x),
-                    int(self.player.hurtbox.centery - self.camera_y),
-                )
-                self.transition.start(
-                    ret_trigger, mode="PORTAL", focus_screen_pos=focus_screen
-                )
-            return True
-
-        self.victory_timer = 0.0
         return False
 
     def restart_game(self):
@@ -770,6 +978,7 @@ class Game:
                     elif choice == "RESTART":
                         self.restart_game()
                     elif choice == "MAIN MENU":
+                        self.audio.stop_bgm(fadeout_ms=600)
                         self.state = State.MENU
                     elif choice == "QUIT":
                         self.running = False
@@ -790,6 +999,12 @@ class Game:
                         for enemy in list(self.enemies):
                             if hasattr(enemy, "boss_health"):
                                 enemy.boss_health = 0
+                            if hasattr(enemy, "is_dead"):
+                                enemy.is_dead = True
+                            if hasattr(enemy, "clear_owned_attacks"):
+                                enemy.clear_owned_attacks()
+                            if hasattr(enemy, "_clear_contact_hitbox"):
+                                enemy._clear_contact_hitbox()
                             enemy.kill()
                         print("[Debug] All enemies defeated")
 
@@ -802,6 +1017,7 @@ class Game:
                     elif (
                         not self.player.is_teleporting
                         and not self.transition.is_transitioning
+                        and not self.is_boss_intro_active()
                     ):
                         if event.key == pygame.K_e:
                             self.handle_interact_key()
@@ -820,6 +1036,7 @@ class Game:
                     event.type == pygame.MOUSEBUTTONDOWN
                     and not self.player.is_teleporting
                     and not self.transition.is_transitioning
+                    and not self.is_boss_intro_active()
                 ):
                     if event.button == 1:
                         keys = pygame.key.get_pressed()
@@ -839,8 +1056,8 @@ class Game:
 
     def get_all_active_hitboxes(self):
         """
-        Collect all active hitboxes from the shared list AND the current Boss's
-        unified `get_active_hitboxes()` interface (deduplicated by object identity).
+        Collect all active hitboxes from the shared list, the current Boss,
+        AND all regular enemies (Slimers) via their unified `get_active_hitboxes()` interface.
         """
         combined = []
         seen = set()
@@ -853,6 +1070,12 @@ class Game:
                 if hb.active and id(hb) not in seen:
                     seen.add(id(hb))
                     combined.append(hb)
+        for mob in self.regular_enemies:
+            if mob.alive() and hasattr(mob, "get_active_hitboxes"):
+                for hb in mob.get_active_hitboxes():
+                    if hb.active and id(hb) not in seen:
+                        seen.add(id(hb))
+                        combined.append(hb)
         return combined
 
     def resolve_combat_collisions(self):
@@ -866,23 +1089,38 @@ class Game:
                 continue
 
             if hb.owner == "player":
-                for enemy in self.enemies:
+                for enemy in list(self.enemies):
                     if (
                         enemy.alive()
                         and hb.can_hit(enemy)
                         and hb.rect.colliderect(enemy.hurtbox)
                     ):
                         hb.register_hit(enemy)
+                        prev_stamina = getattr(enemy, "stamina", 0)
                         enemy.be_attacked(hb.damage)
-                        if hb.tag == "player_down_slash":
+                        dodged = (
+                            prev_stamina > 0
+                            and getattr(enemy, "stamina", 0) < prev_stamina
+                        )
+                        if not dodged:
+                            self.audio.play_sfx("hit")
+                        if hb.tag == "player_down_slash" and not dodged:
                             self.player.on_pogo_hit(vfx_group=self.vfx_group)
 
-            elif hb.owner == "boss" and self.player.alive():
+            elif hb.owner in ("boss", "enemy") and self.player.alive():
+                attacker = getattr(hb, "source_entity", None)
+                if attacker is None and hb.owner == "boss":
+                    attacker = self.boss
+
                 if (
-                    self.boss is None
+                    attacker is None
+                    or not attacker.alive()
                     or self.player.is_teleporting
-                    or not hb.can_hit(self.player)
                 ):
+                    continue
+
+                is_sans_attack = getattr(hb, "tag", "").startswith("sans_")
+                if not hb.can_hit(self.player):
                     continue
 
                 hit_parry_box = (
@@ -892,19 +1130,32 @@ class Game:
                 hit_hurtbox = hb.rect.colliderect(self.player.hurtbox)
 
                 if hit_parry_box or hit_hurtbox:
-                    hb.register_hit(self.player)
+                    # Undertale Blue Attack rule: if NOT blocking and completely still on ground,
+                    # Sky-Blue attacks pass harmlessly through the player!
+                    if (
+                        getattr(hb, "attack_type", "white") == "blue"
+                        and not self.player.is_blocking
+                        and self.player.is_completely_still()
+                    ):
+                        continue
+
                     outcome = self.player.take_hit(
-                        hb, attacker=self.boss, vfx_group=self.vfx_group
+                        hb, attacker=attacker, vfx_group=self.vfx_group
                     )
+                    # For Sans attacks: unblocked hits ("kr_hit") do NOT add player to hit_targets
+                    # so overlapping bones / Gaster Blaster beams keep draining 1 HP continuously!
+                    if not is_sans_attack or outcome in ("parry", "block"):
+                        hb.register_hit(self.player)
+
                     if outcome == "parry":
                         focus_x = (
                             self.player.parry_box.centerx * 0.65
-                            + self.boss.hurtbox.centerx * 0.35
+                            + attacker.hurtbox.centerx * 0.35
                         )
                         focus_y = self.player.hurtbox.centery
                         self.trigger_bullet_time(focus_x=focus_x, focus_y=focus_y)
-                        if self.boss.alive():
-                            self.boss.on_parried()
+                        if attacker.alive() and hasattr(attacker, "on_parried"):
+                            attacker.on_parried()
 
     def update(self, raw_dt):
         # 1. Update transition animation (Iris Wipe / Respawn Fade)
@@ -928,9 +1179,15 @@ class Game:
         if self.transition_cooldown > 0.0:
             self.transition_cooldown = max(0.0, self.transition_cooldown - raw_dt)
 
-        # 2. Update screen dimming timer
+        # 2. Update screen dimming, screen shake & portal unlock banner timers
         if self.screen_dim_timer > 0.0:
             self.screen_dim_timer = max(0.0, self.screen_dim_timer - raw_dt)
+        if self.screen_shake_timer > 0.0:
+            self.screen_shake_timer = max(0.0, self.screen_shake_timer - raw_dt)
+        if self.portal_unlock_banner_timer > 0.0:
+            self.portal_unlock_banner_timer = max(
+                0.0, self.portal_unlock_banner_timer - raw_dt
+            )
 
         # 3. Hitstop freeze frame on Perfect Parry
         if self.hitstop_timer > 0.0:
@@ -939,8 +1196,29 @@ class Game:
                 vfx.update(raw_dt * 0.12)
             return
 
-        # 4. Update Bullet Time & 1.15x Camera Zoom recovery
-        if self.bullet_time_timer > 0.0:
+        # 4. Update Bullet Time, Boss Intro 1.40x Camera Pan/Zoom & Recovery
+        if self.is_boss_intro_active():
+            intro_p = getattr(self.boss, "intro_progress", 0.0)
+            target_fx = float(self.boss.pos_x)
+            target_fy = float(self.boss.pos_y - 54.0)
+            lerp_k = min(1.0, raw_dt * 7.5)
+            self.zoom_focus_world[0] += (target_fx - self.zoom_focus_world[0]) * lerp_k
+            self.zoom_focus_world[1] += (target_fy - self.zoom_focus_world[1]) * lerp_k
+
+            # Smoothly zoom in to 1.40x during intro, then ease back to 1.0x as battle starts
+            if intro_p < 0.22:
+                z_t = intro_p / 0.22
+                self.zoom_scale = 1.0 + 0.40 * (1.0 - (1.0 - z_t) ** 3)
+                self.intro_letterbox_ratio = z_t
+            elif intro_p < 0.80:
+                self.zoom_scale = 1.40
+                self.intro_letterbox_ratio = 1.0
+            else:
+                z_t = (intro_p - 0.80) / 0.20
+                self.zoom_scale = 1.40 - 0.40 * (z_t * z_t)
+                self.intro_letterbox_ratio = max(0.0, 1.0 - z_t)
+        elif self.bullet_time_timer > 0.0:
+            self.intro_letterbox_ratio = max(0.0, self.intro_letterbox_ratio - raw_dt * 4.0)
             self.bullet_time_timer = max(0.0, self.bullet_time_timer - raw_dt)
             self.zoom_scale = PARRY_ZOOM_SCALE
             if self.bullet_time_timer <= 0.0:
@@ -949,6 +1227,10 @@ class Game:
                     self.time_scale + BULLET_TIME_RECOVERY_SPEED * raw_dt,
                 )
         else:
+            if self.intro_letterbox_ratio > 0.0:
+                self.intro_letterbox_ratio = max(
+                    0.0, self.intro_letterbox_ratio - raw_dt * 4.5
+                )
             if self.time_scale < 1.0:
                 self.time_scale = min(
                     1.0, self.time_scale + BULLET_TIME_RECOVERY_SPEED * raw_dt
@@ -960,19 +1242,26 @@ class Game:
 
         scaled_dt = raw_dt * self.time_scale
 
-        # 5. Update Player
-        self.player.update(
-            dt=scaled_dt,
-            raw_dt=raw_dt,
-            active_hitboxes=self.active_hitboxes,
-            vfx_group=self.vfx_group,
-            map_width=self.game_map.width,
-        )
+        # 5. Update Player (lock player controls during Boss INTRO cutscene)
+        if self.is_boss_intro_active():
+            self.player.velocity_x = 0.0
+            self.player.holding_move_key = False
+            self.player.is_attacking = False
+            self.player.is_blocking = False
+            self.player.sync_boxes()
+        else:
+            self.player.update(
+                dt=scaled_dt,
+                raw_dt=raw_dt,
+                active_hitboxes=self.active_hitboxes,
+                vfx_group=self.vfx_group,
+                map_width=self.game_map.width,
+            )
 
         # 6. Update Checkpoints & Portals interaction zones
         self.update_checkpoints_and_portals(raw_dt)
 
-        # 7. Update Boss / Guided Tutorial entities
+        # 7. Update Boss, Regular Enemies (Slimers) & Guided Tutorial entities
         if self.boss is not None and self.boss.alive():
             self.boss.update(
                 dt=scaled_dt,
@@ -980,12 +1269,42 @@ class Game:
                 vfx_group=self.vfx_group,
                 map_width=self.game_map.width,
             )
+            shake_req = getattr(self.boss, "pending_screen_shake", 0.0)
+            if shake_req > 0.0:
+                self.screen_shake_timer = max(self.screen_shake_timer, shake_req)
+                self.boss.pending_screen_shake = 0.0
+
+        for mob in list(self.regular_enemies):
+            if mob.alive():
+                mob.update(
+                    dt=scaled_dt,
+                    vfx_group=self.vfx_group,
+                    map_width=self.game_map.width,
+                )
 
         if self.tutorial_manager is not None:
             self.tutorial_manager.update(scaled_dt)
 
-        if self.is_main_world() and self.boss is not None and not self.boss.alive():
-            self.main_boss_defeated = True
+        # Check Stage Clear Condition -> Persist boss_defeated & level_cleared, Unlock Portals & Spawn Victory Checkpoint!
+        if not self.stage_cleared and self.check_stage_clear_condition():
+            self.stage_cleared = True
+            self.level_cleared = True
+            self.cleared_stages[self.map_name()] = True
+            if self.is_sans_arena():
+                self.boss_defeated["sans"] = True
+            elif self.is_vergil_arena():
+                self.boss_defeated["vergil"] = True
+            unlocked_any = False
+            for trigger in self.triggers:
+                if trigger.unlock(vfx_group=self.vfx_group):
+                    unlocked_any = True
+            if self.is_boss_arena():
+                self.spawn_boss_victory_checkpoint()
+                self.audio.stop_bgm(fadeout_ms=1100)
+            if unlocked_any:
+                self.portal_unlock_banner_timer = 3.4
+                self.audio.play_sfx("level_clear")
+                print(f"[Stage Clear] '{self.map_name()}' Cleared! Portal Unlocked.")
 
         # 8. Update VFX & Hitboxes
         for vfx in list(self.vfx_group):
@@ -1032,8 +1351,19 @@ class Game:
 
         elif self.state in (State.PLAYING, State.PAUSED):
             # ==================== Pass 1: Render Game World onto self.world_surface ====================
-            self.world_surface.blit(self.background, (0, 0))
-            self.game_map.draw(self.world_surface, self.camera_x, self.camera_y)
+            shake_dx = 0
+            shake_dy = 0
+            if self.screen_shake_timer > 0.0:
+                mag = int(round(self.screen_shake_intensity * min(1.0, self.screen_shake_timer * 2.5)))
+                if mag > 0:
+                    shake_dx = random.randint(-mag, mag)
+                    shake_dy = random.randint(-mag, mag)
+
+            active_bg = self.sans_background if self.is_sans_arena() else self.background
+            self.world_surface.blit(active_bg, (shake_dx, shake_dy))
+            self.game_map.draw(
+                self.world_surface, self.camera_x - shake_dx, self.camera_y - shake_dy
+            )
 
             # 1. Draw Guided Tutorial world elements (gates, spikes, signposts, dummy/guardian UI)
             if self.tutorial_manager is not None:
@@ -1070,21 +1400,35 @@ class Game:
                 self.parry_dim_overlay.fill((10, 16, 36, max(25, dim_alpha)))
                 self.world_surface.blit(self.parry_dim_overlay, (0, 0))
 
-            # 4. Draw Player's pixel flame aura, afterimages, and 1.5s buff particles
+            # 3b. Layer 1 Background Distortion VFX (behind characters, e.g. Vergil Judgement Cut End)
+            for vfx in self.vfx_group:
+                if hasattr(vfx, "draw_background_layer"):
+                    vfx.draw_background_layer(
+                        self.world_surface, self.camera_x, self.camera_y
+                    )
+
+            # 4. Draw Player & Boss extras (flame aura, afterimages, Sans dodge afterimages)
             if self.player.alive():
                 self.player.draw_extras(
                     self.world_surface, self.camera_x, self.camera_y
                 )
+            if self.boss is not None and self.boss.alive() and hasattr(self.boss, "draw_extras"):
+                self.boss.draw_extras(
+                    self.world_surface, self.camera_x, self.camera_y
+                )
 
-            # 5. Draw all active sprites (Player, Boss, Tutorial Targets)
+            # 5. Draw all active sprites (Player, Boss, Slimers, Tutorial Targets)
             for sprite in self.all_sprites:
                 if sprite.alive():
                     self.world_surface.blit(
                         sprite.image,
                         sprite.rect.move(-self.camera_x, -self.camera_y),
                     )
+            for mob in self.regular_enemies:
+                if mob.alive() and hasattr(mob, "draw_hp_bar"):
+                    mob.draw_hp_bar(self.world_surface, self.camera_x, self.camera_y)
 
-            # 6. Draw all VFX (Slashes, Heal particles, Portal particles, Pixel Ink-Splash Parry)
+            # 6. Draw all VFX (Midground Slashes, Heal particles, Portal particles, Pixel Ink-Splash Parry)
             for vfx in self.vfx_group:
                 vfx.draw(self.world_surface, self.camera_x, self.camera_y)
 
@@ -1095,15 +1439,16 @@ class Game:
             if self.player.status_timer > 0.0 and self.player.status_text:
                 sx = int(self.player.pos_x - self.camera_x)
                 sy = int(self.player.hurtbox.top - 18 - self.camera_y)
-                color = (
-                    (90, 250, 255)
-                    if (
-                        "PERFECT" in self.player.status_text
-                        or "POGO" in self.player.status_text
-                        or "SHATTERED" in self.player.status_text
-                    )
-                    else (255, 230, 120)
-                )
+                if "KR" in self.player.status_text:
+                    color = (225, 95, 255)
+                elif (
+                    "PERFECT" in self.player.status_text
+                    or "POGO" in self.player.status_text
+                    or "SHATTERED" in self.player.status_text
+                ):
+                    color = (90, 250, 255)
+                else:
+                    color = (255, 230, 120)
                 self.draw_text(
                     self.player.status_text,
                     self.font_hud,
@@ -1126,6 +1471,7 @@ class Game:
                     self.boss,
                     self.get_all_active_hitboxes(),
                     self.vfx_group,
+                    regular_enemies=self.regular_enemies,
                 )
                 for trigger in self.triggers:
                     trigger.draw_debug(
@@ -1140,8 +1486,17 @@ class Game:
                         cp is self.active_checkpoint,
                     )
 
-            # ==================== Pass 2: Apply 1.15x Camera Zoom onto self.screen ====================
+            # ==================== Pass 2: Apply Dynamic Camera Zoom (1.40x Boss Intro / 1.15x Parry) onto self.screen ====================
             self._blit_world_with_zoom()
+
+            # Cinema Letterbox black bars during Boss Intro Cutscene
+            if self.intro_letterbox_ratio > 0.01:
+                bar_h = int(round(56 * self.intro_letterbox_ratio))
+                if bar_h > 0:
+                    pygame.draw.rect(self.screen, (0, 0, 0), (0, 0, WIDTH, bar_h))
+                    pygame.draw.rect(
+                        self.screen, (0, 0, 0), (0, HEIGHT - bar_h, WIDTH, bar_h)
+                    )
 
             # ==================== Pass 3: Render Fixed Top-Layer HUD & UI onto self.screen ====================
             self.hud.draw_gameplay_hud(self.screen)
@@ -1150,6 +1505,45 @@ class Game:
                 self.tutorial_manager.draw_hud_banner(self.screen, self.hud)
 
             if self.debug_mode:
+                # Top-left Boss Debug Status Panel (below Player HP & God Mode badge)
+                if self.boss is not None:
+                    b_cls = self.boss.__class__.__name__
+                    b_pos = f"({int(self.boss.pos_x)}, {int(self.boss.pos_y)})"
+                    b_alive = self.boss.alive()
+                    b_hp = f"{int(round(self.boss.boss_health))}/{int(self.boss.max_health)}"
+                    b_state = getattr(self.boss, "state", "-")
+                    b_ground = getattr(self.boss, "on_ground", False)
+                    debug_lines = [
+                        f"BOSS: {b_cls} | Alive={b_alive} | HP={b_hp} | State={b_state}",
+                        f"BOSS POS: {b_pos} | Grounded={b_ground} | Slimers={len(self.regular_enemies)}",
+                    ]
+                else:
+                    debug_lines = [
+                        f"BOSS: None | Slimers={len(self.regular_enemies)}",
+                    ]
+
+                panel_x, panel_y = 24, 114
+                line_surfs = [
+                    self.hud.font_hud.render(line, False, (120, 255, 220))
+                    for line in debug_lines
+                ]
+                panel_w = max(s.get_width() for s in line_surfs) + 16
+                panel_h = sum(s.get_height() + 4 for s in line_surfs) + 10
+                panel_bg = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+                panel_bg.fill((12, 18, 28, 200))
+                self.screen.blit(panel_bg, (panel_x, panel_y))
+                pygame.draw.rect(
+                    self.screen,
+                    (80, 220, 200),
+                    (panel_x, panel_y, panel_w, panel_h),
+                    1,
+                    border_radius=3,
+                )
+                cur_y = panel_y + 6
+                for s in line_surfs:
+                    self.screen.blit(s, (panel_x + 8, cur_y))
+                    cur_y += s.get_height() + 4
+
                 map_name = os.path.basename(self.current_map_path)
                 mode_str = (
                     "TUTORIAL"
@@ -1172,23 +1566,56 @@ class Game:
                 )
                 self.screen.blit(info_surf, (24, HEIGHT - 36))
 
+            if self.is_main_world():
+                total_slimes = max(1, len(self.regular_enemy_spawns))
+                rem_slimes = len(self.regular_enemies)
+                if not self.level_cleared and rem_slimes > 0:
+                    obj_text = f"STAGE 1: DEFEAT ALL SLIMERS ({total_slimes - rem_slimes} / {total_slimes})"
+                    obj_col = (195, 245, 210)
+                    border_col = (90, 210, 125)
+                else:
+                    obj_text = "STAGE 1 CLEAR! PORTAL OPEN — ENTER TO FACE SANS"
+                    obj_col = (120, 245, 255)
+                    border_col = (90, 225, 255)
+                obj_surf = self.hud.font_hud.render(obj_text, False, obj_col)
+                ow = obj_surf.get_width() + 24
+                oh = obj_surf.get_height() + 12
+                ox = (WIDTH - ow) // 2
+                oy = 22
+                pill = pygame.Surface((ow, oh), pygame.SRCALPHA)
+                pill.fill((14, 18, 30, 195))
+                self.screen.blit(pill, (ox, oy))
+                pygame.draw.rect(
+                    self.screen, border_col, (ox, oy, ow, oh), 2, border_radius=4
+                )
+                self.screen.blit(obj_surf, (ox + 12, oy + 6))
+
+            if self.portal_unlock_banner_timer > 0.0:
+                self.hud.draw_text(
+                    self.screen,
+                    "PORTAL UNLOCKED!",
+                    self.hud.font_small,
+                    (110, 245, 255),
+                    (WIDTH // 2, 86),
+                )
+
             if (
                 not self.is_tutorial
                 and self.boss is not None
                 and not self.boss.alive()
             ):
                 boss_label = getattr(self.boss, "boss_name", "BOSS")
-                if self.is_main_world():
+                if self.is_sans_arena():
                     self.hud.draw_text(
                         self.screen,
-                        f"LEVEL 1 CLEAR! {boss_label} DEFEATED",
+                        f"STAGE 2 CLEAR! {boss_label} DEFEATED",
                         self.hud.font_big,
                         (255, 215, 80),
                         (WIDTH // 2, HEIGHT // 2 - 48),
                     )
                     self.hud.draw_text(
                         self.screen,
-                        "Enter the Portal to challenge VERGIL in Level 2",
+                        "Enter the Portal to challenge VERGIL in Stage 3",
                         self.hud.font_small,
                         (180, 235, 255),
                         (WIDTH // 2, HEIGHT // 2 + 12),
@@ -1199,7 +1626,14 @@ class Game:
                         f"VICTORY! {boss_label} DEFEATED",
                         self.hud.font_big,
                         (255, 215, 80),
-                        (WIDTH // 2, HEIGHT // 2 - 40),
+                        (WIDTH // 2, HEIGHT // 2 - 48),
+                    )
+                    self.hud.draw_text(
+                        self.screen,
+                        "Enter the Portal to return to Stage 1",
+                        self.hud.font_small,
+                        (180, 235, 255),
+                        (WIDTH // 2, HEIGHT // 2 + 12),
                     )
 
             if self.state == State.PAUSED:
@@ -1222,6 +1656,41 @@ class Game:
                 (220, 220, 220),
                 (WIDTH // 2, 420),
             )
+
+        # Layer 3 Foreground Screen-Breaking VFX Overlay (above ALL entities, camera zoom, and HUD!)
+        if self.state in (State.PLAYING, State.PAUSED):
+            for vfx in self.vfx_group:
+                if hasattr(vfx, "draw_screen_overlay"):
+                    vfx.draw_screen_overlay(self.screen)
+
+            # Programmatic Pixel-Font Boss Title Card ('The weakest ?' / 'Sans') with smooth 2.0s pacing
+            if self.boss is not None and getattr(self.boss, "title_card_active", False):
+                tc_t = getattr(self.boss, "title_card_timer", 0.0)
+                if tc_t < 0.25:
+                    bg_alpha = int(255 * (tc_t / 0.25))
+                elif tc_t > 1.70:
+                    bg_alpha = int(255 * max(0.0, 1.0 - (tc_t - 1.70) / 0.30))
+                else:
+                    bg_alpha = 255
+
+                self.title_card_surf.fill((255, 255, 255, max(0, min(255, bg_alpha))))
+                if tc_t >= 0.25:
+                    sub_a = min(255, int(255 * min(1.0, (tc_t - 0.25) / 0.15)))
+                    sub_a = min(sub_a, bg_alpha)
+                    sub_surf = self.font_title_sub.render("The weakest ?", False, (0, 0, 0))
+                    sub_surf.set_alpha(sub_a)
+                    self.title_card_surf.blit(
+                        sub_surf, sub_surf.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 65))
+                    )
+                if tc_t >= 0.60:
+                    main_a = min(255, int(255 * min(1.0, (tc_t - 0.60) / 0.10)))
+                    main_a = min(main_a, bg_alpha)
+                    main_surf = self.font_title_main.render("Sans", False, (0, 0, 0))
+                    main_surf.set_alpha(main_a)
+                    self.title_card_surf.blit(
+                        main_surf, main_surf.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 30))
+                    )
+                self.screen.blit(self.title_card_surf, (0, 0))
 
         # Topmost transition overlay (Pixelated Iris Wipe or Respawn Fade)
         self.transition.draw(self.screen)

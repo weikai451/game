@@ -1,14 +1,16 @@
 import math
 import pygame
 from Settings import WIDTH, HEIGHT, get_pixel_font
-from VFX import draw_floating_prompt_box
+from VFX import draw_floating_prompt_box, PortalTeleportVFX
 
 
 class MapTrigger:
     """
-    地圖傳送門 / 場景切換觸發區：
-    - 取消直接觸碰傳送，改為玩家靠近進入 interaction_rect 時顯示浮動小視窗 `[E] 進入傳送門`
-    - 玩家按下 E 鍵時啟動傳送動畫與過場轉場
+    Stage Portal / Map Transition Trigger:
+    - Completely hidden and non-interactable until `unlock(vfx_group)` is triggered
+      upon completing the current stage's clear condition.
+    - Plays a materializing scale-in & particle convergence animation upon unlock.
+    - Shows `[E] Enter Portal` when the player stands near an unlocked portal.
     """
 
     def __init__(
@@ -18,7 +20,8 @@ class MapTrigger:
         spawn_pos,
         require_boss_dead=False,
         boss_type=None,
-        name="傳送門",
+        name="Portal",
+        unlocked=False,
     ):
         self.rect = rect if isinstance(rect, pygame.Rect) else pygame.Rect(rect)
         self.interaction_rect = self.rect.inflate(36, 20)
@@ -28,18 +31,46 @@ class MapTrigger:
         self.boss_type = boss_type
         self.name = name
 
+        self.unlocked = bool(unlocked)
+        self.unlock_anim_timer = 0.65 if self.unlocked else 0.0
         self.can_interact = False
         self.anim_timer = 0.0
 
+    def unlock(self, vfx_group=None):
+        """Reveal and activate this portal with a particle convergence burst."""
+        if self.unlocked:
+            return False
+        self.unlocked = True
+        self.unlock_anim_timer = 0.0
+        if vfx_group is not None:
+            vfx_group.add(
+                PortalTeleportVFX(
+                    self.rect.centerx,
+                    self.rect.bottom,
+                    duration=0.75,
+                    mode="arrive",
+                )
+            )
+        return True
+
     def is_locked(self, boss=None):
+        if not self.unlocked:
+            return True
         return bool(self.require_boss_dead and boss is not None and boss.alive())
 
     def update(self, raw_dt, player_rect):
+        if not self.unlocked:
+            self.can_interact = False
+            return
         self.anim_timer += raw_dt
+        if self.unlock_anim_timer < 0.65:
+            self.unlock_anim_timer = min(0.65, self.unlock_anim_timer + raw_dt)
         self.can_interact = self.interaction_rect.colliderect(player_rect)
 
     def can_trigger(self, player_rect, boss=None):
-        """判斷玩家是否位於傳送門互動範圍內且符合開啟條件"""
+        """Only allow portal interaction after the portal is unlocked and player is in range."""
+        if not self.unlocked:
+            return False
         if not self.interaction_rect.colliderect(player_rect):
             return False
         if self.is_locked(boss):
@@ -47,20 +78,25 @@ class MapTrigger:
         return True
 
     def draw(self, screen, camera_x, camera_y, font, boss=None):
-        """繪製場景傳送門像素光環與靠近時的 `[E] 進入傳送門` 浮動提示視窗"""
+        """Render pixel-art portal aura and `[E] Enter Portal` prompt ONLY when unlocked."""
+        if not self.unlocked:
+            return
+
         cx, cy = self.rect.center
         sx = int(round(cx - camera_x))
-        sy = int(round(cy - camera_y))
         locked = self.is_locked(boss)
 
-        # 1. 繪製像素風傳送陣光環 (縮小至 1/2 畫布繪製再放大以保留像素感)
+        # Smooth pixel scale-in reveal animation (0.0 -> 0.65s)
+        reveal = min(1.0, self.unlock_anim_timer / 0.65)
+        scale_t = 0.18 + 0.82 * (1.0 - (1.0 - reveal) ** 3)
+
         pw, ph = 52, 76
         low_w, low_h = pw // 2, ph // 2
         low_surf = pygame.Surface((low_w, low_h), pygame.SRCALPHA)
         lcx, lcy = low_w // 2, low_h // 2
 
-        outer_col = (255, 85, 95, 185) if locked else (90, 225, 255, 195)
-        inner_col = (180, 50, 70, 150) if locked else (165, 105, 255, 175)
+        outer_col = (255, 85, 95, 185) if locked else (90, 225, 255, 215)
+        inner_col = (180, 50, 70, 150) if locked else (165, 105, 255, 195)
         pulse = int(math.sin(self.anim_timer * 5.0) * 2)
 
         pygame.draw.ellipse(
@@ -77,55 +113,47 @@ class MapTrigger:
         )
         pygame.draw.ellipse(
             low_surf,
-            (230, 250, 255, 95) if not locked else (255, 140, 140, 80),
+            (230, 250, 255, 115) if not locked else (255, 140, 140, 80),
             (10, 13, low_w - 20, low_h - 26),
         )
 
-        # 環繞旋轉像素光點
+        # Orbiting pixel sparks
         for i in range(4):
-            ang = self.anim_timer * 3.2 + i * (math.pi * 0.5)
+            ang = self.anim_timer * 3.5 + i * (math.pi * 0.5)
             px = int(lcx + math.cos(ang) * (low_w * 0.38))
             py = int(lcy + math.sin(ang) * (low_h * 0.40))
-            low_surf.fill((245, 255, 255, 230), pygame.Rect(px, py, 2, 2))
+            low_surf.fill((245, 255, 255, 240), pygame.Rect(px, py, 2, 2))
 
-        hi_surf = pygame.transform.scale(low_surf, (pw, ph))
-        screen.blit(hi_surf, (sx - pw // 2, self.rect.bottom - camera_y - ph))
+        cur_w = max(4, int(round(pw * scale_t)))
+        cur_h = max(6, int(round(ph * scale_t)))
+        hi_surf = pygame.transform.scale(low_surf, (cur_w, cur_h))
+        screen.blit(hi_surf, (sx - cur_w // 2, self.rect.bottom - camera_y - cur_h))
 
-        # 2. 當玩家靠近傳送門時，於正上方繪製浮動互動小視窗
-        if self.can_interact:
+        # Floating `[E] Enter Portal` prompt when player is nearby
+        if self.can_interact and reveal >= 0.45 and not locked:
             prompt_y = min(self.rect.top, self.rect.bottom - ph) - 8
-            if locked:
-                draw_floating_prompt_box(
-                    screen,
-                    cx,
-                    prompt_y,
-                    camera_x,
-                    camera_y,
-                    "[LOCKED] Defeat Guardian First",
-                    font,
-                    border_color=(255, 95, 95),
-                    text_color=(255, 210, 210),
-                )
-            else:
-                draw_floating_prompt_box(
-                    screen,
-                    cx,
-                    prompt_y,
-                    camera_x,
-                    camera_y,
-                    "[E] Enter Portal",
-                    font,
-                    border_color=(140, 225, 255),
-                    text_color=(245, 252, 255),
-                )
+            draw_floating_prompt_box(
+                screen,
+                cx,
+                prompt_y,
+                camera_x,
+                camera_y,
+                "[E] Enter Portal",
+                font,
+                border_color=(140, 225, 255),
+                text_color=(245, 252, 255),
+            )
 
     def draw_debug(self, screen, camera_x, camera_y, boss=None):
-        """在 Debug 模式 (F1) 下畫出傳送門框線"""
+        """Draw portal bounds in Debug Mode (dim gray when hidden/locked, bright green when unlocked)."""
         screen_rect = self.rect.move(-camera_x, -camera_y)
         ir = self.interaction_rect.move(-camera_x, -camera_y)
-        color = (255, 80, 80) if self.is_locked(boss) else (80, 255, 160)
-        pygame.draw.rect(screen, color, screen_rect, 2)
-        pygame.draw.rect(screen, (180, 120, 255), ir, 1)
+        if not self.unlocked:
+            pygame.draw.rect(screen, (110, 110, 130), screen_rect, 1)
+        else:
+            color = (255, 80, 80) if self.is_locked(boss) else (80, 255, 160)
+            pygame.draw.rect(screen, color, screen_rect, 2)
+            pygame.draw.rect(screen, (180, 120, 255), ir, 1)
 
 
 def find_interactable_portal(player, triggers, boss=None):

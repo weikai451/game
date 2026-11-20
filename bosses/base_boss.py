@@ -5,11 +5,18 @@ from Settings import GROUND_Y, GRAVITY
 
 
 class BossState:
+    INTRO = "INTRO"
     IDLE = "IDLE"
     CHASE = "CHASE"
     ATTACK_1 = "ATTACK_1"
     ATTACK_2 = "ATTACK_2"
     ATTACK_3 = "ATTACK_3"
+    ATTACK_4 = "ATTACK_4"
+    ATTACK_5 = "ATTACK_5"
+    ATTACK_6 = "ATTACK_6"
+    PHASE_2_TRANSITION = "PHASE_2_TRANSITION"
+    JUDGEMENT_CUT_END = "JUDGEMENT_CUT_END"
+    SANS_ULTIMATE = "SANS_ULTIMATE"
     COOLDOWN = "COOLDOWN"
 
 
@@ -66,12 +73,14 @@ class BaseBoss(pygame.sprite.Sprite):
         self.drop_through_timer = 0.0
         self.flip = True
 
-        # FSM state machine
+        # FSM state machine & Intro Cutscene state
         self.state = BossState.IDLE
         self.attack_phase = AttackPhase.NONE
         self.state_timer = 0.0
         self.cooldown_duration = 0.55
         self.combo_step = 0
+        self.intro_duration = 1.75
+        self.intro_progress = 1.0
 
         # Per-skill cooldowns (seconds)
         self.skill_cooldowns = {
@@ -80,9 +89,12 @@ class BaseBoss(pygame.sprite.Sprite):
             BossState.ATTACK_3: 0.0,
         }
 
-        # Hit flash & invulnerability timers
+        # Hit flash, invulnerability, death & camera shake request flags
         self.hit_flash_timer = 0.0
         self.hit_invuln_timer = 0.0
+        self.invincible = False
+        self.is_dead = False
+        self.pending_screen_shake = 0.0
 
         # Owned attack VFX & Hitboxes (tracked for unified get_active_hitboxes() & cleanup)
         self.current_melee_hitbox = None
@@ -329,11 +341,14 @@ class BaseBoss(pygame.sprite.Sprite):
     # ---------- Shared Damage, Parry Reaction & Reset ----------
     def take_damage(self, damage=12):
         """Unified damage intake with brief invulnerability and red hit flash"""
+        if self.invincible:
+            return
         if self.hit_invuln_timer <= 0.0 and self.hp > 0:
             self.hp = max(0.0, round(self.hp - damage, 2))
             self.hit_flash_timer = 0.25
             self.hit_invuln_timer = 0.18
             if self.hp <= 0.0:
+                self.is_dead = True
                 self.clear_owned_attacks()
                 self.kill()
 
@@ -362,6 +377,9 @@ class BaseBoss(pygame.sprite.Sprite):
         self.combo_step = 0
         self.hit_flash_timer = 0.0
         self.hit_invuln_timer = 0.0
+        self.invincible = False
+        self.is_dead = False
+        self.pending_screen_shake = 0.0
         for k in self.skill_cooldowns:
             self.skill_cooldowns[k] = 0.0
         self.animator.play("idle", force_reset=True)

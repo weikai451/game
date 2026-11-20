@@ -22,5 +22,14 @@
     <property name="one_way" type="bool" value="true"/>
    </properties>
   </object>
+
+  <!-- Victory Exit Portal (Unlocked & Visible ONLY after defeating Vergil) -->
+  <object id="6" x="1060" y="528" width="96" height="128">
+   <properties>
+    <property name="spawn_x" type="int" value="140"/>
+    <property name="spawn_y" type="int" value="640"/>
+    <property name="target" value="main_world.tmx"/>
+   </properties>
+  </object>
  </objectgroup>
 </map>

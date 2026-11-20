@@ -169,8 +169,9 @@ class HUD:
         x = (WIDTH - bar_w) // 2
         y = 25
 
-        cur_ratio = cur_hp / max_hp
-        disp_ratio = disp_hp / max_hp
+        intro_scale = max(0.0, min(1.0, getattr(self.boss, "intro_progress", 1.0)))
+        cur_ratio = (cur_hp / max_hp) * intro_scale
+        disp_ratio = (disp_hp / max_hp) * intro_scale
 
         pygame.draw.rect(screen, (35, 30, 45), (x, y, bar_w, bar_h), border_radius=4)
         if disp_ratio > 0:
@@ -197,10 +198,42 @@ class HUD:
             else f"{int(round(cur_hp))}"
         )
         boss_name = getattr(self.boss, "boss_name", "SANS")
-        hp_label = f"{boss_name}: {hp_val_str} / {max_hp} ({int(cur_ratio * 100)}%)"
+        hp_label = f"{boss_name}: {hp_val_str} / {int(max_hp)} ({int(cur_ratio * 100)}%)"
         self.draw_text(
             screen, hp_label, self.font_hud, (255, 255, 255), (WIDTH // 2, y + bar_h // 2)
         )
+
+        # Optional compact Stamina Bar directly under HP Bar (e.g. Undertale Sans 10-Dodge Stamina)
+        next_label_y = y + bar_h + 14
+        max_stam = getattr(self.boss, "max_stamina", 0)
+        if max_stam > 0:
+            cur_stam = max(0, getattr(self.boss, "stamina", 0))
+            stam_ratio = (cur_stam / max_stam) * intro_scale
+            s_w = 340
+            s_h = 14
+            sx = (WIDTH - s_w) // 2
+            sy = y + bar_h + 5
+
+            pygame.draw.rect(screen, (24, 28, 42), (sx, sy, s_w, s_h), border_radius=3)
+            if stam_ratio > 0:
+                fill_col = (255, 215, 60) if cur_stam > 3 else (75, 235, 255)
+                pygame.draw.rect(
+                    screen,
+                    fill_col,
+                    (sx, sy, max(2, int(s_w * stam_ratio)), s_h),
+                    border_radius=3,
+                )
+            pygame.draw.rect(
+                screen, (215, 235, 250), (sx, sy, s_w, s_h), 1, border_radius=3
+            )
+            stam_txt = f"STAMINA: {cur_stam} / {max_stam}"
+            self.draw_text(
+                screen, stam_txt, self.font_hud, (15, 18, 28), (WIDTH // 2 + 1, sy + s_h // 2 + 1)
+            )
+            self.draw_text(
+                screen, stam_txt, self.font_hud, (255, 255, 255), (WIDTH // 2, sy + s_h // 2)
+            )
+            next_label_y = sy + s_h + 13
 
         boss_state = getattr(self.boss, "state", "BOSS")
         title = f"{boss_state}"
@@ -208,10 +241,10 @@ class HUD:
         if attack_phase != "NONE":
             title += f" [{attack_phase}]"
         self.draw_text(
-            screen, title, self.font_hud, (20, 20, 30), (WIDTH // 2 + 1, y + bar_h + 14)
+            screen, title, self.font_hud, (20, 20, 30), (WIDTH // 2 + 1, next_label_y)
         )
         self.draw_text(
-            screen, title, self.font_hud, (235, 225, 255), (WIDTH // 2, y + bar_h + 13)
+            screen, title, self.font_hud, (235, 225, 255), (WIDTH // 2, next_label_y - 1)
         )
 
     # =========================================================================
