@@ -1226,7 +1226,7 @@ class Game:
 
             if hb.owner == "player":
                 for enemy in list(self.enemies):
-                    if getattr(enemy, "waiting_for_dialogue", False):
+                    if getattr(enemy, "waiting_for_dialogue", False) or getattr(enemy, "state", "") == "DYING":
                         continue
                     if (
                         enemy.alive()
@@ -1591,6 +1591,10 @@ class Game:
             if shake_req > 0.0:
                 self.screen_shake_timer = max(self.screen_shake_timer, shake_req)
                 self.boss.pending_screen_shake = 0.0
+            death_hs = getattr(self.boss, "pending_death_hitstop", 0.0)
+            if death_hs > 0.0:
+                self.hitstop_timer = max(self.hitstop_timer, death_hs)
+                self.boss.pending_death_hitstop = 0.0
 
         for mob in list(self.regular_enemies):
             if mob.alive():
@@ -1817,7 +1821,7 @@ class Game:
                     self.boss.hurtbox.top - 22,
                     self.camera_x,
                     self.camera_y,
-                    "[E] Talk",
+                    "[E]",
                     self.font_prompt,
                 )
 
@@ -1828,8 +1832,8 @@ class Game:
             # 7. Draw black radial manga speed lines during Perfect Parry
             self.draw_parry_speed_lines(self.world_surface)
 
-            # 8. Floating combat feedback text above Player
-            if self.player.status_timer > 0.0 and self.player.status_text:
+            # 8. Floating combat feedback text above Player (Tutorial only to keep Boss combat clean!)
+            if self.is_tutorial and self.player.status_timer > 0.0 and self.player.status_text:
                 sx = int(self.player.pos_x - self.camera_x)
                 sy = int(self.player.hurtbox.top - 18 - self.camera_y)
                 if "KR" in self.player.status_text:
@@ -2088,35 +2092,122 @@ class Game:
             # Undertale Pre-Boss Dialogue Box (bottom-center black box / white pixel border)
             if self.dialogue_box.active:
                 self.dialogue_box.draw(self.screen)
+            elif self.boss is not None and getattr(self.boss, "dying_dialogue_text", ""):
+                # Non-blocking pixel dying line box (e.g. Sans: "...well, i'm going to grillby's...")
+                box_w, box_h = 740, 118
+                bx = (WIDTH - box_w) // 2
+                by = HEIGHT - box_h - 32
+                pygame.draw.rect(self.screen, (6, 6, 10), (bx, by, box_w, box_h))
+                pygame.draw.rect(self.screen, (255, 255, 255), (bx, by, box_w, box_h), 4)
+                d_surf = self.font_small.render(
+                    self.boss.dying_dialogue_text, False, (255, 255, 255)
+                )
+                self.screen.blit(d_surf, d_surf.get_rect(midleft=(bx + 36, by + box_h // 2)))
 
-            # Programmatic Pixel-Font Boss Title Card ('The weakest ?' / 'Sans') with smooth 2.0s pacing
+            # Programmatic Pixel-Font Boss Title Cards (Sans White Minimalist vs. Vergil Abyssal Dimension Slash)
             if self.boss is not None and getattr(self.boss, "title_card_active", False):
                 tc_t = getattr(self.boss, "title_card_timer", 0.0)
-                if tc_t < 0.25:
-                    bg_alpha = int(255 * (tc_t / 0.25))
-                elif tc_t > 1.70:
-                    bg_alpha = int(255 * max(0.0, 1.0 - (tc_t - 1.70) / 0.30))
-                else:
-                    bg_alpha = 255
+                tc_style = getattr(self.boss, "title_card_style", "sans")
 
-                self.title_card_surf.fill((255, 255, 255, max(0, min(255, bg_alpha))))
-                if tc_t >= 0.25:
-                    sub_a = min(255, int(255 * min(1.0, (tc_t - 0.25) / 0.15)))
-                    sub_a = min(sub_a, bg_alpha)
-                    sub_surf = self.font_title_sub.render("The weakest ?", False, (0, 0, 0))
-                    sub_surf.set_alpha(sub_a)
-                    self.title_card_surf.blit(
-                        sub_surf, sub_surf.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 65))
-                    )
-                if tc_t >= 0.60:
-                    main_a = min(255, int(255 * min(1.0, (tc_t - 0.60) / 0.10)))
-                    main_a = min(main_a, bg_alpha)
-                    main_surf = self.font_title_main.render("Sans", False, (0, 0, 0))
-                    main_surf.set_alpha(main_a)
-                    self.title_card_surf.blit(
-                        main_surf, main_surf.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 30))
-                    )
-                self.screen.blit(self.title_card_surf, (0, 0))
+                if tc_style == "vergil":
+                    # Vergil Dimension-Slash Title Card (total 2.10s: 0.0..0.35s slash-open -> 0.35..1.75s titles -> 1.75..2.10s close)
+                    if tc_t < 0.35:
+                        bg_alpha = int(255 * min(1.0, tc_t / 0.28))
+                    elif tc_t > 1.75:
+                        bg_alpha = int(255 * max(0.0, 1.0 - (tc_t - 1.75) / 0.35))
+                    else:
+                        bg_alpha = 255
+
+                    self.title_card_surf.fill((8, 10, 18, max(0, min(255, bg_alpha))))
+
+                    # Diagonal Dimension Slash Fissure Line (#00D8FF cyan + #6A0DAD deep purple)
+                    slash_p = min(1.0, tc_t / 0.25)
+                    close_p = max(0.0, min(1.0, (tc_t - 1.75) / 0.35))
+                    line_alpha = int(bg_alpha * (1.0 - close_p * 0.85))
+                    x_start = int(WIDTH * (0.04 + 0.44 * close_p))
+                    x_end = int(WIDTH * (0.04 + 0.92 * slash_p - 0.44 * close_p))
+                    y_start = int(HEIGHT * 0.54 + 42)
+                    y_end = int(HEIGHT * 0.46 - 42)
+                    if x_end > x_start and line_alpha > 8:
+                        # Deep purple outer energy glow
+                        pygame.draw.line(
+                            self.title_card_surf,
+                            (106, 13, 173, min(255, line_alpha)),
+                            (x_start, y_start),
+                            (x_end, y_end),
+                            9 if tc_t < 0.35 else 5,
+                        )
+                        # Electric cyan middle line
+                        pygame.draw.line(
+                            self.title_card_surf,
+                            (0, 216, 255, min(255, line_alpha)),
+                            (x_start, y_start),
+                            (x_end, y_end),
+                            5 if tc_t < 0.35 else 2,
+                        )
+                        # Razor-sharp cyan-white core during initial slash flash
+                        if tc_t < 0.38:
+                            pygame.draw.line(
+                                self.title_card_surf,
+                                (235, 252, 255, min(255, line_alpha)),
+                                (x_start, y_start),
+                                (x_end, y_end),
+                                2,
+                            )
+
+                    # Top Subtitle: 'The Alpha and the Omega' (#A0C8FF)
+                    if tc_t >= 0.35:
+                        sub_a = min(bg_alpha, int(255 * min(1.0, (tc_t - 0.35) / 0.22)))
+                        sub_surf = self.font_title_sub.render(
+                            "The Alpha and the Omega", False, (160, 200, 255)
+                        )
+                        sub_surf.set_alpha(sub_a)
+                        self.title_card_surf.blit(
+                            sub_surf, sub_surf.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 70))
+                        )
+
+                    # Bottom Main Title: 'VERGIL' (#FFFFFF with #00D8FF pixel shadow offset)
+                    if tc_t >= 0.72:
+                        main_a = min(bg_alpha, int(255 * min(1.0, (tc_t - 0.72) / 0.12)))
+                        shadow_surf = self.font_title_main.render("VERGIL", False, (0, 216, 255))
+                        shadow_surf.set_alpha(int(main_a * 0.85))
+                        main_surf = self.font_title_main.render("VERGIL", False, (255, 255, 255))
+                        main_surf.set_alpha(main_a)
+                        self.title_card_surf.blit(
+                            shadow_surf, shadow_surf.get_rect(center=(WIDTH // 2 + 4, HEIGHT // 2 + 39))
+                        )
+                        self.title_card_surf.blit(
+                            main_surf, main_surf.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 35))
+                        )
+
+                    self.screen.blit(self.title_card_surf, (0, 0))
+                else:
+                    # Sans Pure-White Minimalist Title Card ('The weakest ?' / 'Sans')
+                    if tc_t < 0.25:
+                        bg_alpha = int(255 * (tc_t / 0.25))
+                    elif tc_t > 1.70:
+                        bg_alpha = int(255 * max(0.0, 1.0 - (tc_t - 1.70) / 0.30))
+                    else:
+                        bg_alpha = 255
+
+                    self.title_card_surf.fill((255, 255, 255, max(0, min(255, bg_alpha))))
+                    if tc_t >= 0.25:
+                        sub_a = min(255, int(255 * min(1.0, (tc_t - 0.25) / 0.15)))
+                        sub_a = min(sub_a, bg_alpha)
+                        sub_surf = self.font_title_sub.render("The weakest ?", False, (0, 0, 0))
+                        sub_surf.set_alpha(sub_a)
+                        self.title_card_surf.blit(
+                            sub_surf, sub_surf.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 65))
+                        )
+                    if tc_t >= 0.60:
+                        main_a = min(255, int(255 * min(1.0, (tc_t - 0.60) / 0.10)))
+                        main_a = min(main_a, bg_alpha)
+                        main_surf = self.font_title_main.render("Sans", False, (0, 0, 0))
+                        main_surf.set_alpha(main_a)
+                        self.title_card_surf.blit(
+                            main_surf, main_surf.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 30))
+                        )
+                    self.screen.blit(self.title_card_surf, (0, 0))
 
         # Topmost transition overlay (Pixelated Iris Wipe or Respawn Fade)
         self.transition.draw(self.screen)

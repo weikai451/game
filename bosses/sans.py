@@ -74,6 +74,8 @@ class Sans(BaseBoss):
         self._chain_tp_hover = False
         self.title_card_active = False
         self.title_card_timer = 0.0
+        self._death_alpha = 255.0
+        self._death_walk_dir = 1
         self.skill_cooldowns[BossState.ATTACK_4] = 2.0
         self.skill_cooldowns[BossState.ATTACK_5] = 3.2
         self.skill_cooldowns[BossState.ATTACK_6] = 0.0
@@ -886,6 +888,82 @@ class Sans(BaseBoss):
         # Stamina exhausted (0/10): fatal hit on 1 HP!
         super().take_damage(damage)
 
+    def begin_death_sequence(self):
+        """Undertale-authentic Sans defeat cutscene: 9999999 hitstop -> chest slash -> Grillby's -> walk-off fade."""
+        super().begin_death_sequence()
+        self.pending_death_hitstop = 0.16
+        self.pending_screen_shake = max(self.pending_screen_shake, 0.32)
+        self._death_alpha = 255.0
+        arena_mid = (self.arena_left_x + self.arena_right_x) * 0.5
+        self._death_walk_dir = 1 if self.pos_x >= arena_mid else -1
+        self.animator.play("idle", force_reset=True)
+        get_audio().play_sfx("jce_shatter")
+        if self._last_vfx_group is not None:
+            self._last_vfx_group.add(
+                FloatingTextVFX(
+                    self.pos_x,
+                    self.hurtbox.top - 26,
+                    text="9999999",
+                    color=(255, 40, 48),
+                    outline_color=(12, 8, 16),
+                    font_size=34,
+                    duration=1.55,
+                    rise_speed=36.0,
+                )
+            )
+
+    def _update_dying(self, dt, vfx_group, map_width):
+        """
+        5.0s Undertale Sans Death Cutscene:
+        - 0.00 .. 1.60s: Shocked, sweating, clutching diagonal crimson chest slash.
+        - 1.60 .. 3.40s: Stands up shakily, delivers '...well, i'm going to grillby's...'
+        - 3.40 .. 5.00s: Slowly walks sideways off-stage while fading out (alpha 255 -> 0).
+        """
+        t = self.state_timer
+        old_x = self.pos_x
+
+        if t < 1.60:
+            self.face_target()
+        elif t < 3.40:
+            if self.combo_step == 0:
+                self.combo_step = 1
+                self.dying_dialogue_text = "* ...well, i'm going to grillby's..."
+                get_audio().play_sfx("sans_blip")
+        elif t < 5.00:
+            if self.combo_step < 2:
+                self.combo_step = 2
+                self.dying_dialogue_text = ""
+                self.flip = self._death_walk_dir < 0
+                self.animator.play("Run", force_reset=True)
+                get_audio().play_sfx("portal_warp")
+            self.pos_x += self._death_walk_dir * 52.0 * dt
+            fade_p = min(1.0, (t - 3.40) / 1.55)
+            self._death_alpha = max(0.0, 255.0 * (1.0 - fade_p))
+        else:
+            self.finish_death_sequence()
+            return
+
+        self.apply_physics_and_collisions(dt, old_x, map_width)
+        anim_name = "Run" if t >= 3.40 else "idle"
+        self.image = self.animator.update_get_image(
+            self.animation_speed.get(anim_name, 0.09) * (0.55 if t >= 3.40 else 0.35),
+            dt_scale=dt * 60.0,
+        )
+        if self.flip:
+            self.image = pygame.transform.flip(self.image, True, False).convert_alpha()
+        if self._death_alpha < 254.0:
+            self.image = self.image.copy()
+            self.image.set_alpha(int(self._death_alpha))
+        self.sync_boxes()
+        # Subtle shocked crouch / trembling offset while clutching chest
+        if t < 1.60:
+            tremble = int(math.sin(t * 45.0) * 2)
+            self.rect.x += tremble
+            self.rect.y += 7
+        elif t < 2.20:
+            rise = int(7 * (1.0 - (t - 1.60) / 0.60))
+            self.rect.y += rise
+
     def reset(self):
         self.stamina = self.max_stamina
         self.phase = 1
@@ -893,6 +971,7 @@ class Sans(BaseBoss):
         self.phase2_triggered = False
         self.screen_blackout_timer = 0.0
         self._chain_tp_hover = False
+        self._death_alpha = 255.0
         self.cooldown_scale = 0.85
         self.title_card_active = False
         self.dodge_timer = 0.0
@@ -909,6 +988,19 @@ class Sans(BaseBoss):
                 img = ghost.copy()
                 img.set_alpha(int(alpha))
                 surface.blit(img, rect.move(-camera_x, -camera_y))
+
+        if self.state == BossState.DYING and self.alive():
+            if self.state_timer < 3.40:
+                sx = int(round(self.pos_x - camera_x))
+                sy = int(round(self.pos_y - 52 - camera_y))
+                # Diagonal crimson chest slash mark
+                pygame.draw.line(surface, (235, 28, 42), (sx - 13, sy - 10), (sx + 13, sy + 14), 4)
+                pygame.draw.line(surface, (255, 165, 170), (sx - 11, sy - 8), (sx + 11, sy + 12), 1)
+                # Animated pixel sweat drops beside temple
+                drop_off = int((self.state_timer * 24.0) % 10)
+                pygame.draw.rect(surface, (185, 240, 255), (sx + 14, sy - 26 + drop_off, 4, 6))
+                pygame.draw.rect(surface, (255, 255, 255), (sx + 15, sy - 25 + drop_off, 2, 2))
+            return
 
         if (self.teleport_phase_unlocked or self.phase >= 2) and self.alive():
             t = pygame.time.get_ticks() * 0.001
@@ -1049,6 +1141,9 @@ class Sans(BaseBoss):
         self._last_vfx_group = vfx_group
         self._last_map_width = map_width
         self._tick_common_timers(dt)
+        if self.state == BossState.DYING:
+            self._update_dying(dt, vfx_group, map_width)
+            return
         if self.waiting_for_dialogue:
             self.face_target()
             self.apply_physics_and_collisions(dt, self.pos_x, map_width)

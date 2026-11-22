@@ -14,10 +14,12 @@ class BossState:
     ATTACK_4 = "ATTACK_4"
     ATTACK_5 = "ATTACK_5"
     ATTACK_6 = "ATTACK_6"
+    ATTACK_7 = "ATTACK_7"
     PHASE_2_TRANSITION = "PHASE_2_TRANSITION"
     JUDGEMENT_CUT_END = "JUDGEMENT_CUT_END"
     SANS_ULTIMATE = "SANS_ULTIMATE"
     COOLDOWN = "COOLDOWN"
+    DYING = "DYING"
 
 
 class AttackPhase:
@@ -95,6 +97,8 @@ class BaseBoss(pygame.sprite.Sprite):
         self.invincible = False
         self.is_dead = False
         self.pending_screen_shake = 0.0
+        self.pending_death_hitstop = 0.0
+        self.dying_dialogue_text = ""
 
         # Owned attack VFX & Hitboxes (tracked for unified get_active_hitboxes() & cleanup)
         self.current_melee_hitbox = None
@@ -360,19 +364,40 @@ class BaseBoss(pygame.sprite.Sprite):
             else:
                 self.on_ground = False
 
-    # ---------- Shared Damage, Parry Reaction & Reset ----------
+    # ---------- Shared Damage, Death Sequence, Parry Reaction & Reset ----------
+    def begin_death_sequence(self):
+        """Enter BossState.DYING to play authentic boss defeat cutscene before setting is_dead=True."""
+        self.clear_owned_attacks()
+        self.pending_secondary_skill = None
+        self.secondary_skill_timer = 0.0
+        self.invincible = True
+        self.state = BossState.DYING
+        self.attack_phase = AttackPhase.NONE
+        self.state_timer = 0.0
+        self.combo_step = 0
+        self.pending_death_hitstop = 0.14
+        self.dying_dialogue_text = ""
+        from audio_manager import get_audio
+
+        get_audio().stop_bgm(fadeout_ms=1200)
+
+    def finish_death_sequence(self):
+        """Finalize Boss death after the DYING cutscene finishes."""
+        self.dying_dialogue_text = ""
+        self.is_dead = True
+        self.clear_owned_attacks()
+        self.kill()
+
     def take_damage(self, damage=12):
         """Unified damage intake with brief invulnerability and red hit flash"""
-        if self.invincible:
+        if self.invincible or self.state == BossState.DYING:
             return
         if self.hit_invuln_timer <= 0.0 and self.hp > 0:
             self.hp = max(0.0, round(self.hp - damage, 2))
             self.hit_flash_timer = 0.25
             self.hit_invuln_timer = 0.18
             if self.hp <= 0.0:
-                self.is_dead = True
-                self.clear_owned_attacks()
-                self.kill()
+                self.begin_death_sequence()
 
     def be_attacked(self, damage=12):
         """Backward-compatible alias for take_damage()"""
@@ -402,6 +427,8 @@ class BaseBoss(pygame.sprite.Sprite):
         self.invincible = False
         self.is_dead = False
         self.pending_screen_shake = 0.0
+        self.pending_death_hitstop = 0.0
+        self.dying_dialogue_text = ""
         for k in self.skill_cooldowns:
             self.skill_cooldowns[k] = 0.0
         self.animator.play("idle", force_reset=True)

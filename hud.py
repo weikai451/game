@@ -114,17 +114,12 @@ class HUD:
             screen, border_color, (x, y, bar_w, bar_h), 2, border_radius=4
         )
 
-        # 5. HP numerical label (antialias=False)
-        shown_int_hp = int(round(main_hp))
-        hp_str = f"PLAYER HP: {shown_int_hp} / {max_hp} ({int(main_ratio * 100)}%)"
-        txt_surf = self.font_hud.render(hp_str, False, (255, 255, 255))
-        screen.blit(txt_surf, (x + 10, y + 4))
-
-        # 5b. Crimson Tears Healing Flask Pixel Icons beside HP Bar ([R] key)
+        # 5. Pure Graphical Player HP Bar + 3 Pixel Crimson Tears Flask Icons directly below
+        # (Zero redundant text labels, controls lists, or status banners!)
         max_flasks = getattr(self.player, "max_flasks", 3)
         cur_flasks = getattr(self.player, "flasks", 0)
-        fx_base = x + bar_w + 14
-        fy_base = y + 1
+        fx_base = x
+        fy_base = y + bar_h + 8
         for i in range(max_flasks):
             fx = fx_base + i * 24
             fy = fy_base
@@ -142,49 +137,27 @@ class HUD:
             else:
                 pygame.draw.rect(screen, (30, 32, 42), belly, border_radius=3)
                 pygame.draw.rect(screen, (100, 102, 118), belly, 2, border_radius=3)
-        key_surf = self.font_hud.render("[R]", False, (255, 210, 130) if cur_flasks > 0 else (120, 125, 140))
-        screen.blit(key_surf, (fx_base + max_flasks * 24 + 4, y + 4))
 
-        # 6. Parry / Buff / Controls status badge (no remaining buff seconds shown)
-        next_y = y + bar_h + 6
-        is_parrying = getattr(self.player, "is_parrying", False)
-        parry_buff = getattr(self.player, "parry_damage_buff", False)
-        is_blocking = getattr(self.player, "is_blocking", False)
-
-        if is_parrying:
-            badge_text = "* PERFECT PARRY WINDOW *"
-            badge_color = (80, 245, 255)
-        elif parry_buff:
-            badge_text = ">> PARRY BUFF: 1.35x ATK DMG <<"
-            badge_color = (255, 205, 55)
-        elif is_blocking:
-            badge_text = "GUARDING (70% DMG REDUCTION)"
-            badge_color = (120, 180, 255)
-        else:
-            badge_text = "[LMB] Atk | Air S+[LMB] Pogo | [RMB] Parry | [Q] Dash | [R] Flask | [E] Talk/Use"
-            badge_color = (210, 215, 225)
-
-        badge_surf = self.font_hud.render(badge_text, False, badge_color)
-        screen.blit(badge_surf, (x, next_y))
-
-        # 7. [DEBUG: GOD MODE] indicator when debug mode is active
+        # 6. [DEBUG] indicator ONLY when debug mode (F1/TAB) is active
         if god_mode:
-            god_surf = self.font_hud.render(
-                "[DEBUG: GOD MODE]", False, (80, 255, 120)
-            )
+            god_surf = self.font_hud.render("[DEBUG]", False, (80, 255, 120))
             badge_bg = pygame.Rect(
-                x, next_y + 22, god_surf.get_width() + 16, god_surf.get_height() + 8
+                x, fy_base + 28, god_surf.get_width() + 12, god_surf.get_height() + 6
             )
             pygame.draw.rect(screen, (20, 45, 30), badge_bg, border_radius=4)
-            pygame.draw.rect(screen, (80, 255, 120), badge_bg, 2, border_radius=4)
-            screen.blit(god_surf, (badge_bg.x + 8, badge_bg.y + 4))
+            pygame.draw.rect(screen, (80, 255, 120), badge_bg, 1, border_radius=4)
+            screen.blit(god_surf, (badge_bg.x + 6, badge_bg.y + 3))
 
     def _draw_boss_hp(self, screen):
         """
         Draw top-center Boss HP bar and state label (x = (WIDTH - bar_w) // 2, y = 25)
         Hidden while Boss is peacefully waiting for [E] Talk pre-battle dialogue.
         """
-        if self.boss is None or getattr(self.boss, "waiting_for_dialogue", False):
+        if (
+            self.boss is None
+            or getattr(self.boss, "waiting_for_dialogue", False)
+            or getattr(self.boss, "state", "") == "DYING"
+        ):
             return
 
         max_hp = getattr(self.boss, "max_health", 100)
@@ -250,19 +223,6 @@ class HUD:
             pygame.draw.rect(
                 screen, (215, 235, 250), (sx, sy, s_w, s_h), 1, border_radius=3
             )
-            next_label_y = sy + s_h + 13
-
-        boss_state = getattr(self.boss, "state", "BOSS")
-        title = f"{boss_state}"
-        attack_phase = getattr(self.boss, "attack_phase", "NONE")
-        if attack_phase != "NONE":
-            title += f" [{attack_phase}]"
-        self.draw_text(
-            screen, title, self.font_hud, (20, 20, 30), (WIDTH // 2 + 1, next_label_y)
-        )
-        self.draw_text(
-            screen, title, self.font_hud, (235, 225, 255), (WIDTH // 2, next_label_y - 1)
-        )
 
     # =========================================================================
     # Tutorial Prompt Dialog (TUTORIAL_PROMPT) & Guided Stage Banner

@@ -138,7 +138,7 @@ class MapTrigger:
                 prompt_y,
                 camera_x,
                 camera_y,
-                "[E] Enter Portal",
+                "[E]",
                 font,
                 border_color=(140, 225, 255),
                 text_color=(245, 252, 255),
