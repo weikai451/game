@@ -100,6 +100,8 @@ class BaseBoss(pygame.sprite.Sprite):
         self.current_melee_hitbox = None
         self.owned_hitboxes = []
         self.owned_vfx = []
+        # Phase 2 concurrent dual-skill slot: [skill_id, delay_timer] (max 1 secondary -> max 2 total)
+        self.pending_secondary_skill = None
 
         # Animator & sprite offset compensation (populated by subclasses)
         self.animator = AnimatedSprite()
@@ -192,8 +194,28 @@ class BaseBoss(pygame.sprite.Sprite):
             self.current_melee_hitbox.destroy()
             self.current_melee_hitbox = None
 
+    def schedule_secondary_skill(self, skill_id: str, delay: float = 0.22):
+        """Schedule at most 1 concurrent secondary skill during Phase 2 (max 2 skills active)."""
+        if skill_id:
+            self.pending_secondary_skill = [str(skill_id), max(0.0, float(delay))]
+
+    def tick_secondary_skill(self, dt, active_hitboxes, vfx_group, map_width):
+        """Tick the scheduled secondary skill and execute it concurrently without interrupting primary FSM."""
+        if self.pending_secondary_skill is None:
+            return
+        self.pending_secondary_skill[1] -= dt
+        if self.pending_secondary_skill[1] <= 0.0:
+            skill_id = self.pending_secondary_skill[0]
+            self.pending_secondary_skill = None
+            self._execute_secondary_skill(skill_id, active_hitboxes, vfx_group, map_width)
+
+    def _execute_secondary_skill(self, skill_id, active_hitboxes, vfx_group, map_width):
+        """Override in subclasses (Sans / Vergil) to spawn a concurrent secondary skill."""
+        pass
+
     def clear_owned_attacks(self):
         """Destroy all melee hitboxes, projectiles, and beams owned by this Boss"""
+        self.pending_secondary_skill = None
         self._clear_melee_hitbox()
         for hb in self.owned_hitboxes:
             hb.destroy()

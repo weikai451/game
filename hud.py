@@ -120,6 +120,31 @@ class HUD:
         txt_surf = self.font_hud.render(hp_str, False, (255, 255, 255))
         screen.blit(txt_surf, (x + 10, y + 4))
 
+        # 5b. Crimson Tears Healing Flask Pixel Icons beside HP Bar ([R] key)
+        max_flasks = getattr(self.player, "max_flasks", 3)
+        cur_flasks = getattr(self.player, "flasks", 0)
+        fx_base = x + bar_w + 14
+        fy_base = y + 1
+        for i in range(max_flasks):
+            fx = fx_base + i * 24
+            fy = fy_base
+            filled = i < cur_flasks
+            # Cork stopper & glass neck
+            pygame.draw.rect(screen, (190, 145, 80) if filled else (75, 75, 85), (fx + 6, fy, 6, 3))
+            pygame.draw.rect(screen, (220, 215, 200) if filled else (90, 90, 102), (fx + 6, fy + 3, 6, 4))
+            # Rounded pixel flask belly
+            belly = pygame.Rect(fx + 2, fy + 7, 14, 15)
+            if filled:
+                pygame.draw.rect(screen, (195, 28, 48), belly, border_radius=3)
+                pygame.draw.rect(screen, (255, 78, 95), (fx + 4, fy + 9, 10, 6), border_radius=2)
+                pygame.draw.rect(screen, (255, 240, 240), (fx + 5, fy + 10, 3, 3))
+                pygame.draw.rect(screen, (245, 205, 110), belly, 2, border_radius=3)
+            else:
+                pygame.draw.rect(screen, (30, 32, 42), belly, border_radius=3)
+                pygame.draw.rect(screen, (100, 102, 118), belly, 2, border_radius=3)
+        key_surf = self.font_hud.render("[R]", False, (255, 210, 130) if cur_flasks > 0 else (120, 125, 140))
+        screen.blit(key_surf, (fx_base + max_flasks * 24 + 4, y + 4))
+
         # 6. Parry / Buff / Controls status badge (no remaining buff seconds shown)
         next_y = y + bar_h + 6
         is_parrying = getattr(self.player, "is_parrying", False)
@@ -136,7 +161,7 @@ class HUD:
             badge_text = "GUARDING (70% DMG REDUCTION)"
             badge_color = (120, 180, 255)
         else:
-            badge_text = "LMB: Attack | Air S+LMB: Pogo | RMB/J: Parry | E: Interact"
+            badge_text = "[LMB] Atk | Air S+[LMB] Pogo | [RMB] Parry | [Q] Dash | [R] Flask | [E] Talk/Use"
             badge_color = (210, 215, 225)
 
         badge_surf = self.font_hud.render(badge_text, False, badge_color)
@@ -157,8 +182,9 @@ class HUD:
     def _draw_boss_hp(self, screen):
         """
         Draw top-center Boss HP bar and state label (x = (WIDTH - bar_w) // 2, y = 25)
+        Hidden while Boss is peacefully waiting for [E] Talk pre-battle dialogue.
         """
-        if self.boss is None:
+        if self.boss is None or getattr(self.boss, "waiting_for_dialogue", False):
             return
 
         max_hp = getattr(self.boss, "max_health", 100)
@@ -192,31 +218,29 @@ class HUD:
             screen, (245, 245, 250), (x, y, bar_w, bar_h), 2, border_radius=4
         )
 
-        hp_val_str = (
-            f"{cur_hp:.1f}"
-            if abs(cur_hp - round(cur_hp)) > 0.05
-            else f"{int(round(cur_hp))}"
-        )
+        # Pure Visual Gauge Only: display ONLY Boss name (no numeric HP, fractions, or percentages!)
         boss_name = getattr(self.boss, "boss_name", "SANS")
-        hp_label = f"{boss_name}: {hp_val_str} / {int(max_hp)} ({int(cur_ratio * 100)}%)"
         self.draw_text(
-            screen, hp_label, self.font_hud, (255, 255, 255), (WIDTH // 2, y + bar_h // 2)
+            screen, boss_name, self.font_hud, (15, 15, 25), (WIDTH // 2 + 1, y + bar_h // 2 + 1)
+        )
+        self.draw_text(
+            screen, boss_name, self.font_hud, (255, 255, 255), (WIDTH // 2, y + bar_h // 2)
         )
 
-        # Optional compact Stamina Bar directly under HP Bar (e.g. Undertale Sans 10-Dodge Stamina)
+        # Optional pure visual Stamina Bar directly under HP Bar (no numeric stamina text!)
         next_label_y = y + bar_h + 14
         max_stam = getattr(self.boss, "max_stamina", 0)
         if max_stam > 0:
             cur_stam = max(0, getattr(self.boss, "stamina", 0))
             stam_ratio = (cur_stam / max_stam) * intro_scale
             s_w = 340
-            s_h = 14
+            s_h = 12
             sx = (WIDTH - s_w) // 2
             sy = y + bar_h + 5
 
             pygame.draw.rect(screen, (24, 28, 42), (sx, sy, s_w, s_h), border_radius=3)
             if stam_ratio > 0:
-                fill_col = (255, 215, 60) if cur_stam > 3 else (75, 235, 255)
+                fill_col = (255, 215, 60) if cur_stam > max_stam * 0.25 else (75, 235, 255)
                 pygame.draw.rect(
                     screen,
                     fill_col,
@@ -225,13 +249,6 @@ class HUD:
                 )
             pygame.draw.rect(
                 screen, (215, 235, 250), (sx, sy, s_w, s_h), 1, border_radius=3
-            )
-            stam_txt = f"STAMINA: {cur_stam} / {max_stam}"
-            self.draw_text(
-                screen, stam_txt, self.font_hud, (15, 18, 28), (WIDTH // 2 + 1, sy + s_h // 2 + 1)
-            )
-            self.draw_text(
-                screen, stam_txt, self.font_hud, (255, 255, 255), (WIDTH // 2, sy + s_h // 2)
             )
             next_label_y = sy + s_h + 13
 

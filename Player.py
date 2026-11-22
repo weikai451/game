@@ -72,6 +72,24 @@ class Player(pygame.sprite.Sprite):
         self._prev_anim_state = "idle"
         self.sans_kr_tick_timer = 0.0  # Continuous 1-DMG KR tick interval (0.024s) for Sans attacks
         self.kr_flash_timer = 0.0      # Purple Karma (KR) visual flash on Sans hit
+
+        # Q-Key Short-Range Horizontal Dash (0.16s zero-gravity burst + dodge i-frames)
+        self.is_dashing = False
+        self.dash_timer = 0.0
+        self.dash_cooldown = 0.0
+        self.dash_dir = 1
+        self.dash_speed = 800.0
+        self.air_dash_available = True
+        self._dash_afterimage_timer = 0.0
+        # Elden Ring–style Crimson Tears Healing Flask (R key, 3 charges, +20% max HP, standing lock)
+        self.max_flasks = 3
+        self.flasks = 3
+        self.is_drinking = False
+        self.drink_timer = 0.0
+        self.drink_duration = 0.88
+        self.drink_healed = False
+        self.drink_aura_timer = 0.0
+
         self.status_text = ""
         self.status_timer = 0.0
 
@@ -90,6 +108,7 @@ class Player(pygame.sprite.Sprite):
             "Attack": 0.28,
             "AirDownAttack": 0.30,
             "Jump": 0.18,
+            "Drink": 0.14,
         }
 
         # Non-transparent bounding box offsets per animation state
@@ -99,6 +118,7 @@ class Player(pygame.sprite.Sprite):
             "Attack": (6.0, 22.0),
             "AirDownAttack": (-6.0, 8.0),
             "Jump": (-9.0, 3.0),
+            "Drink": (1.0, 22.0),
         }
 
         self.animator = AnimatedSprite()
@@ -127,6 +147,7 @@ class Player(pygame.sprite.Sprite):
             1.2,
         )
         self._build_air_down_attack_animation()
+        self._build_drink_animation()
 
         self.animator.play("idle")
         self.image = self.animator.update_get_image(self.animation_speed["idle"])
@@ -143,6 +164,28 @@ class Player(pygame.sprite.Sprite):
 
         self.rect = self.image.get_rect()
         self.sync_boxes()
+
+    def _build_drink_animation(self):
+        """Synthesize 4-frame raised Crimson Tears Flask drinking pose over base idle frames."""
+        idle_frames = self.animator.animation.get("idle", [])
+        drink_frames = []
+        for idx, base in enumerate(idle_frames):
+            f = base.copy()
+            cx = f.get_width() // 2 + 8
+            cy = f.get_height() // 2 - 4 - (2 if idx in (1, 2) else 0)
+            # Small pixel Crimson Flask raised near mouth
+            pygame.draw.rect(f, (210, 170, 95), (cx - 2, cy - 8, 4, 3))       # cork
+            pygame.draw.rect(f, (235, 225, 195), (cx - 2, cy - 5, 4, 3))      # neck
+            pygame.draw.rect(f, (225, 35, 55), (cx - 4, cy - 2, 8, 8))        # crimson belly
+            pygame.draw.rect(f, (255, 220, 110), (cx - 4, cy - 2, 8, 8), 1)   # gold rim
+            pygame.draw.rect(f, (255, 245, 245), (cx - 2, cy, 2, 2))          # shine
+            if idx in (1, 2, 3):
+                # Subtle golden healing glints rising around flask
+                pygame.draw.rect(f, (255, 225, 95), (cx + 6, cy - 8 - idx * 2, 3, 3))
+                pygame.draw.rect(f, (255, 140, 80), (cx - 10, cy - 4 - idx * 2, 2, 2))
+            drink_frames.append(f)
+        if drink_frames:
+            self.animator.animation["Drink"] = drink_frames
 
     def _build_air_down_attack_animation(self):
         jump_frames = self.animator.animation["Jump"]
@@ -262,12 +305,21 @@ class Player(pygame.sprite.Sprite):
 
     def full_heal(self):
         self.player_hp = self.max_hp
+        self.flasks = self.max_flasks
+        self.is_drinking = False
+        self.drink_timer = 0.0
+        self.drink_healed = False
 
     def reset_state_on_respawn(self, spawn_x=None, spawn_y=None):
         if spawn_x is not None and spawn_y is not None:
             self.pos_x = float(spawn_x)
             self.pos_y = float(spawn_y)
         self.player_hp = self.max_hp
+        self.flasks = self.max_flasks
+        self.is_drinking = False
+        self.drink_timer = 0.0
+        self.drink_healed = False
+        self.drink_aura_timer = 0.0
         self.velocity_y = 0.0
         self.knockback_vel_x = 0.0
         self.on_ground = True
@@ -297,6 +349,33 @@ class Player(pygame.sprite.Sprite):
         )
         self.sync_boxes()
 
+    def start_drink_flask(self):
+        """
+        Elden Ring–style Crimson Tears Flask (R key):
+        - Grounded only, requires flasks > 0, not dashing/attacking/blocking/drinking.
+        - Consumes 1 charge immediately, locks movement & actions for 0.88s, heals +20% max HP mid-drink.
+        - Taking a direct hit interrupts the drink lock without refunding the flask.
+        """
+        if self.is_drinking or self.is_dashing or self.is_attacking or self.is_blocking or self.is_teleporting:
+            return
+        if not self.on_ground:
+            self.status_text = "MUST BE ON GROUND TO HEAL"
+            self.status_timer = 0.70
+            return
+        if self.flasks <= 0:
+            self.status_text = "NO FLASKS LEFT"
+            self.status_timer = 0.75
+            return
+
+        self.flasks -= 1
+        self.is_drinking = True
+        self.drink_timer = self.drink_duration
+        self.drink_healed = False
+        self.velocity_x = 0.0
+        self.holding_move_key = False
+        self.animator.play("Drink", force_reset=True)
+        self._prev_anim_state = "Drink"
+
     def jump(self, down_pressed=None):
         """
         Fixed-height jump & One-Way Platform Drop-Through:
@@ -304,6 +383,8 @@ class Player(pygame.sprite.Sprite):
           starts drop_through_timer = 0.25s and drops smoothly through the platform!
         - Otherwise, if on_ground: launches upward with fixed velocity -jump_velocity.
         """
+        if self.is_drinking:
+            return
         if down_pressed is None:
             keys = pygame.key.get_pressed()
             down_pressed = bool(keys[pygame.K_s] or keys[pygame.K_DOWN])
@@ -333,6 +414,8 @@ class Player(pygame.sprite.Sprite):
             get_audio().play_sfx("jump")
 
     def start_block(self):
+        if self.is_drinking:
+            return
         if self.is_attacking:
             self.is_attacking = False
             self.is_down_slashing = False
@@ -352,7 +435,7 @@ class Player(pygame.sprite.Sprite):
             self.parry_cooldown = PARRY_COOLDOWN
 
     def attack(self, down_pressed=None):
-        if self.parry_cancel_timer > 0.0:
+        if self.parry_cancel_timer > 0.0 or self.is_drinking:
             return
         # Allow instant Action Cancel out of block right after a Perfect Parry!
         if self.is_blocking and self.parry_damage_buff:
@@ -377,6 +460,51 @@ class Player(pygame.sprite.Sprite):
 
             get_audio().play_sfx("down_slash" if self.is_down_slashing else "slash")
 
+    def start_dash(self):
+        """
+        Q-Key Short-Range Horizontal Dash:
+        - Prioritizes held Left/Right directional keys; defaults to current facing_dir.
+        - 0.16s zero-gravity high-speed burst (800 px/s) with dodge i-frames & 3-4 cyan afterimages.
+        - 0.68s cooldown; max 1 air-dash per jump (refreshed on landing or Pogo bounce!).
+        """
+        if self.is_dashing or self.is_drinking or self.dash_cooldown > 0.0 or self.is_teleporting:
+            return
+        if not self.on_ground and not self.air_dash_available:
+            return
+
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+            self.dash_dir = -1
+        elif keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+            self.dash_dir = 1
+        else:
+            self.dash_dir = self.facing_dir
+
+        self.flip = self.dash_dir < 0
+        self.is_blocking = False
+        self.parry_timer = 0.0
+        self.is_attacking = False
+        self.is_down_slashing = False
+        self._clear_attack_hitbox()
+
+        self.is_dashing = True
+        self.dash_timer = 0.16
+        self.dash_cooldown = 0.68
+        self._dash_afterimage_timer = 0.0
+        self.velocity_y = 0.0
+        self.knockback_vel_x = 0.0
+        if not self.on_ground:
+            self.air_dash_available = False
+
+        # Spawn initial cyan-white dash afterimage & play crisp wind whoosh SFX
+        if self.image is not None:
+            ghost = self.image.copy()
+            ghost.fill((80, 235, 255), special_flags=pygame.BLEND_RGB_ADD)
+            self.afterimages.append((ghost, self.rect.copy(), 195.0))
+        from audio_manager import get_audio
+
+        get_audio().play_sfx("dash")
+
     def on_pogo_hit(self, vfx_group=None):
         if self.pogo_bounce_count < MAX_POGO_BOUNCES:
             self.pogo_bounce_count += 1
@@ -385,6 +513,7 @@ class Player(pygame.sprite.Sprite):
             self.on_ground = False
             self.on_one_way_platform = False
             self.is_jumping = True
+            self.air_dash_available = True  # Refresh air-dash on successful Pogo!
 
             if vfx_group is not None:
                 vfx_group.add(PogoBounceVFX(self.pos_x, self.pos_y + 10))
@@ -539,13 +668,14 @@ class Player(pygame.sprite.Sprite):
             self.on_ground
             and not self.is_jumping
             and not self.is_attacking
+            and not self.is_dashing
             and not self.holding_move_key
             and abs(self.velocity_x) < 0.1
             and abs(self.velocity_y) < 0.1
         )
 
     def take_hit(self, hitbox, attacker=None, vfx_group=None):
-        if self.is_teleporting:
+        if self.is_teleporting or self.is_dashing:
             return "ignored"
 
         spark_x = (
@@ -629,6 +759,9 @@ class Player(pygame.sprite.Sprite):
         if is_sans_attack:
             if self.sans_kr_tick_timer > 0.0:
                 return "ignored"
+            if self.is_drinking:
+                self.is_drinking = False
+                self.drink_timer = 0.0
             # 40% faster continuous KR drain interval (0.04 * 0.6 = 0.024s)
             self.sans_kr_tick_timer = 0.024
             self.kr_flash_timer = 0.14
@@ -646,6 +779,11 @@ class Player(pygame.sprite.Sprite):
 
         if self.invincible_timer > 0.0:
             return "ignored"
+
+        if self.is_drinking:
+            # Direct hit interrupts flask drinking lock (consumed flask is NOT refunded)
+            self.is_drinking = False
+            self.drink_timer = 0.0
 
         if not self.god_mode:
             self.player_hp = max(0, self.player_hp - int(round(hitbox.damage)))
@@ -760,6 +898,21 @@ class Player(pygame.sprite.Sprite):
             sy = int(self.pos_y - camera_y - (lh - 4) * aura_scale)
             screen.blit(hi_aura, (sx, sy))
 
+        if self.drink_aura_timer > 0.0:
+            ratio = min(1.0, self.drink_aura_timer / 0.70)
+            halo_r = int(28 + 14 * (1.0 - ratio))
+            halo_surf = pygame.Surface((halo_r * 2 + 8, halo_r * 2 + 8), pygame.SRCALPHA)
+            hc = halo_r + 4
+            pygame.draw.circle(
+                halo_surf, (255, 215, 90, int(95 * ratio)), (hc, hc), halo_r, 3
+            )
+            pygame.draw.circle(
+                halo_surf, (255, 115, 75, int(65 * ratio)), (hc, hc), max(4, halo_r - 6), 2
+            )
+            sx = int(round(self.pos_x - camera_x))
+            sy = int(round(self.pos_y - 28 - camera_y))
+            screen.blit(halo_surf, halo_surf.get_rect(center=(sx, sy)))
+
         for surf, rect, alpha in self.afterimages:
             ghost = surf.copy()
             ghost.set_alpha(int(alpha))
@@ -805,10 +958,14 @@ class Player(pygame.sprite.Sprite):
             self.drop_through_timer = max(0.0, self.drop_through_timer - raw_dt)
         if self.parry_cancel_timer > 0.0:
             self.parry_cancel_timer = max(0.0, self.parry_cancel_timer - raw_dt)
+        if self.dash_cooldown > 0.0:
+            self.dash_cooldown = max(0.0, self.dash_cooldown - raw_dt)
         if self.sans_kr_tick_timer > 0.0:
             self.sans_kr_tick_timer = max(0.0, self.sans_kr_tick_timer - raw_dt)
         if self.kr_flash_timer > 0.0:
             self.kr_flash_timer = max(0.0, self.kr_flash_timer - raw_dt)
+        if self.drink_aura_timer > 0.0:
+            self.drink_aura_timer = max(0.0, self.drink_aura_timer - raw_dt)
 
         # 1.5s 1.35x Parry Damage Buff countdown (ticks down after slow-motion ends)
         if self.parry_buff_timer > 0.0:
@@ -838,47 +995,86 @@ class Player(pygame.sprite.Sprite):
             self.sync_boxes()
             return
 
-        # 2. Continuous input checks
+        # 2. Continuous input checks (Unified: Right Click only for Block/Parry!)
         keys = pygame.key.get_pressed()
         mouse_buttons = pygame.mouse.get_pressed()
-        holding_block = (
-            mouse_buttons[2]
-            or keys[pygame.K_j]
-            or keys[pygame.K_LSHIFT]
-        )
+        holding_block = bool(mouse_buttons[2])
         if not holding_block and self.is_blocking:
             self.stop_block()
 
-        # 3. Horizontal movement & gravity
+        # 3. Horizontal movement, Q-Key Dash & gravity
         is_moving = False
         move_speed = self.player_speed * (0.45 if self.is_blocking else 1.0)
         move_dir_x = 0.0
 
-        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
-            move_dir_x -= 1.0
-            is_moving = True
-            if not self.is_attacking:
-                self.flip = True
+        if self.is_drinking:
+            self.drink_timer -= raw_dt
+            dx = 0.0
+            self.velocity_x = 0.0
+            self.holding_move_key = False
+            grav_scale = 1.0
+            # Mid-drink heal trigger (at ~0.36s into the 0.88s standing drink lock)
+            if not self.drink_healed and self.drink_timer <= (self.drink_duration - 0.36):
+                self.drink_healed = True
+                heal_amount = max(1, int(self.max_hp * 0.20))
+                self.player_hp = min(self.max_hp, self.player_hp + heal_amount)
+                self.drink_aura_timer = 0.70
+                self.status_text = f"+{heal_amount} HP"
+                self.status_timer = 0.90
+                from audio_manager import get_audio
 
-        if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-            move_dir_x += 1.0
-            is_moving = True
-            if not self.is_attacking:
-                self.flip = False
+                get_audio().play_sfx("heal_flask")
+                for _ in range(18):
+                    px = self.pos_x + random.uniform(-18, 18)
+                    py = self.pos_y - random.uniform(4, 48)
+                    col = random.choice([(255, 220, 75), (255, 165, 60), (255, 95, 85)])
+                    self.buff_particles.append([px, py, random.randint(2, 4), col, 225.0])
+            if self.drink_timer <= 0.0:
+                self.is_drinking = False
+                self.drink_timer = 0.0
+        elif self.is_dashing:
+            self.dash_timer -= raw_dt
+            self._dash_afterimage_timer += raw_dt
+            if self._dash_afterimage_timer >= 0.04 and self.image is not None:
+                self._dash_afterimage_timer = 0.0
+                ghost = self.image.copy()
+                ghost.fill((95, 235, 255), special_flags=pygame.BLEND_RGB_ADD)
+                self.afterimages.append((ghost, self.rect.copy(), 180.0))
 
-        self.holding_move_key = is_moving
-        dx = move_dir_x * move_speed * dt
-        if abs(self.knockback_vel_x) > 5.0:
-            dx += self.knockback_vel_x * dt
-            self.knockback_vel_x *= max(0.0, 1.0 - 10.0 * dt)
+            dx = self.dash_dir * self.dash_speed * dt
+            self.velocity_y = 0.0
+            self.holding_move_key = True
+            self.velocity_x = self.dash_dir * self.dash_speed
+            grav_scale = 0.0
+            if self.dash_timer <= 0.0:
+                self.is_dashing = False
+                self.dash_timer = 0.0
         else:
-            self.knockback_vel_x = 0.0
+            if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+                move_dir_x -= 1.0
+                is_moving = True
+                if not self.is_attacking:
+                    self.flip = True
 
-        self.velocity_x = (dx / dt) if dt > 1e-6 else 0.0
+            if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+                move_dir_x += 1.0
+                is_moving = True
+                if not self.is_attacking:
+                    self.flip = False
 
-        grav_scale = (
-            PLAYER_AIR_STAY_GRAVITY_SCALE if self.air_stay_timer > 0.0 else 1.0
-        )
+            self.holding_move_key = is_moving
+            dx = move_dir_x * move_speed * dt
+            if abs(self.knockback_vel_x) > 5.0:
+                dx += self.knockback_vel_x * dt
+                self.knockback_vel_x *= max(0.0, 1.0 - 10.0 * dt)
+            else:
+                self.knockback_vel_x = 0.0
+
+            self.velocity_x = (dx / dt) if dt > 1e-6 else 0.0
+
+            grav_scale = (
+                PLAYER_AIR_STAY_GRAVITY_SCALE if self.air_stay_timer > 0.0 else 1.0
+            )
 
         was_on_ground = self.on_ground
         # 4. Map Collision Resolution (Solid Tiles, One-Way / Drop-Through Platforms & Polygons)
@@ -923,6 +1119,7 @@ class Player(pygame.sprite.Sprite):
                 self.is_down_slashing = False
                 self.air_stay_timer = 0.0
                 self.pogo_bounce_count = 0
+                self.air_dash_available = True
             else:
                 self.on_ground = on_ground_now
                 if hit_ceiling and self.velocity_y < 0.0:
@@ -958,7 +1155,10 @@ class Player(pygame.sprite.Sprite):
         new_state = "idle"
         loop_anim = True
 
-        if self.is_attacking:
+        if self.is_drinking:
+            new_state = "Drink"
+            loop_anim = True
+        elif self.is_attacking:
             new_state = "AirDownAttack" if self.is_down_slashing else "Attack"
             loop_anim = False
         elif not self.on_ground:
@@ -1022,10 +1222,10 @@ class Player(pygame.sprite.Sprite):
                 self.image = self.image.copy()
                 self.image.set_alpha(130)
 
-        # 7. Update afterimages & buff particles
+        # 7. Update afterimages & buff particles (capped queues for zero memory leak)
         self.afterimages = [
             (s, r, a - 420.0 * raw_dt)
-            for (s, r, a) in self.afterimages
+            for (s, r, a) in self.afterimages[-16:]
             if a - 420.0 * raw_dt > 12
         ]
         if self.neon_aura_timer > 0.0 or self.air_stay_timer > 0.0:
@@ -1036,7 +1236,7 @@ class Player(pygame.sprite.Sprite):
                 tint.fill((0, 140, 255), special_flags=pygame.BLEND_RGB_ADD)
                 self.afterimages.append((tint, self.rect.copy(), 145.0))
 
-        if self.parry_damage_buff:
+        if self.parry_damage_buff and len(self.buff_particles) < 40:
             if random.random() < 0.45:
                 px = self.pos_x + random.uniform(-15, 15)
                 py = self.pos_y - random.uniform(4, 46)

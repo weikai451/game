@@ -1,6 +1,8 @@
+import ctypes
 import math
 import os
 import random
+import sys
 import pygame
 from Settings import (
     WIDTH,
@@ -27,11 +29,19 @@ from transition_system import (
 from checkpoint import load_checkpoints, Checkpoint
 from menu import Menu
 from tutorial_system import GuidedTutorialManager
+from dialogue_system import DialogueBox
 import Player
 from bosses import Sans, Vergil
 from enemies import Slimer
 from audio_manager import get_audio
-from VFX import draw_debug_boxes, HealVFX, PortalTeleportVFX
+from VFX import (
+    draw_debug_boxes,
+    HealVFX,
+    PortalTeleportVFX,
+    draw_floating_prompt_box,
+    DimensionalRiftVFX,
+    FloatingTextVFX,
+)
 
 
 MAIN_WORLD_PATH = "map/main_world.tmx"
@@ -54,6 +64,7 @@ class Game:
             (WIDTH, HEIGHT), pygame.RESIZABLE | pygame.SCALED
         )
         pygame.display.set_caption("Final Project - Hollow Action")
+        self._disable_windows_ime()
         self.clock = pygame.time.Clock()
         self.running = True
         self.audio = get_audio()
@@ -89,6 +100,15 @@ class Game:
                 self.sans_background = self.background
         except Exception:
             self.sans_background = self.background
+
+        try:
+            if os.path.exists("assets/backgrounds/outpost_bg.png"):
+                outpost_raw = pygame.image.load("assets/backgrounds/outpost_bg.png").convert()
+                self.outpost_background = pygame.transform.scale(outpost_raw, (WIDTH, HEIGHT))
+            else:
+                self.outpost_background = self.sans_background
+        except Exception:
+            self.outpost_background = self.sans_background
 
         # Dedicated World Surface for 1.15x Camera Zoom-in (decoupled from top-layer HUD)
         self.world_surface = pygame.Surface((WIDTH, HEIGHT))
@@ -161,6 +181,16 @@ class Game:
         self.screen_shake_timer = 0.0
         self.screen_shake_intensity = 7.0
         self.intro_letterbox_ratio = 0.0
+        self.rift_cutscene_active = False
+        self.rift_cutscene_timer = 0.0
+        self.rift_cutscene_stage = 0
+        self.rift_pos = [0.0, 0.0]
+        self.rift_blackout_alpha = 0
+        self.dialogue_box = DialogueBox()
+        self.outpost_cleared = False
+        self.outpost_barrier_rect = None
+        self.judgement_hall_lock_rect = None
+        self.sans_encounter_started = False
         self.boss_defeated = {"sans": False, "vergil": False}
         self.cleared_stages = {}
         self.level_cleared = False
@@ -172,6 +202,23 @@ class Game:
         self.boss = None
         self.hud = None
         self.new_game(map_path=MAIN_WORLD_PATH, is_tutorial=False)
+
+    def _disable_windows_ime(self):
+        """
+        Disable Pygame text input & detach Windows IME from the game HWND so pressing
+        Shift never triggers Chinese/English IME popups or eats gameplay key events!
+        """
+        try:
+            pygame.key.stop_text_input()
+        except Exception:
+            pass
+        if sys.platform == "win32":
+            try:
+                hwnd = pygame.display.get_wm_info().get("window")
+                if hwnd:
+                    ctypes.windll.imm32.ImmAssociateContext(hwnd, 0)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Map, Floor Height Lookup, Checkpoints, Portals & Enemy Reset
@@ -224,18 +271,22 @@ class Game:
 
     def check_stage_clear_condition(self):
         """
-        Evaluate the current stage's Portal unlock condition:
-        - Tutorial: Gate 2 open (Parry Guardian defeated & all tutorial stages cleared)
-        - Stage 1 (Slime Exploration): All Slimer enemies defeated
-        - Stage 2 (Sans) & Stage 3 (Vergil): Boss defeated (is_dead == True)
+        Evaluate the current stage's Exit Portal unlock condition:
+        - Tutorial: Gate 2 open (Parry Turret shattered & all tutorial zones cleared)
+        - Main World (Seamless Slime Outpost -> Judgement Hall): Sans defeated!
+        - Boss Arenas (Sans / Vergil): Boss defeated (is_dead == True)
         """
         if self.is_tutorial:
             return bool(
                 self.tutorial_manager is not None
-                and getattr(self.tutorial_manager, "gate2_open", False)
+                and getattr(self.tutorial_manager, "gate3_open", False)
             )
         if self.is_main_world():
-            return len(self.regular_enemies) == 0
+            return self.boss_defeated.get("sans", False) or (
+                self.sans_encounter_started
+                and self.boss is not None
+                and (getattr(self.boss, "is_dead", False) or not self.boss.alive())
+            )
         if self.is_boss_arena():
             return self.boss is not None and (
                 getattr(self.boss, "is_dead", False) or not self.boss.alive()
@@ -347,11 +398,12 @@ class Game:
           spaced 155px apart below the y=584 / y=488 one-way shortcut platforms.
         """
         if self.is_main_world():
+            # 4 Slimers positioned in the Slime Outpost (west of the x=1960 Barrier Gate)
             return [
-                (Slimer, 560.0, 640.0, 95.0),
-                (Slimer, 730.0, 640.0, 95.0),
-                (Slimer, 2290.0, 688.0, 80.0),
-                (Slimer, 2445.0, 688.0, 80.0),
+                (Slimer, 560.0, 640.0, 90.0),
+                (Slimer, 730.0, 640.0, 90.0),
+                (Slimer, 1460.0, 640.0, 85.0),
+                (Slimer, 1660.0, 640.0, 85.0),
             ]
         return []
 
@@ -442,8 +494,20 @@ class Game:
                 else:
                     self.spawn_boss(boss_cls=Vergil, floor_y=floor_y, start_x=boss_x)
         elif self.is_main_world():
-            # Stage 1 is dedicated to Slimer exploration & Pogo practice (no Boss)
-            self.boss = None
+            # Reset Judgement Hall encounter cleanly if player died before defeating Sans
+            if not self.boss_defeated.get("sans", False):
+                self.sans_encounter_started = False
+                self.dialogue_box.active = False
+                if (
+                    self.judgement_hall_lock_rect is not None
+                    and self.judgement_hall_lock_rect in self.game_map.collisions
+                ):
+                    self.game_map.collisions.remove(self.judgement_hall_lock_rect)
+                self.judgement_hall_lock_rect = None
+                self.audio.stop_bgm(fadeout_ms=600)
+                self._spawn_peaceful_judgement_sans()
+            else:
+                self.boss = None
 
         self._rebuild_sprite_groups()
 
@@ -453,17 +517,45 @@ class Game:
                 float(self.boss.boss_health) if self.boss is not None else 0.0
             )
 
-    def update_camera(self):
+    def _spawn_peaceful_judgement_sans(self):
+        """Spawn Sans peacefully waiting inside Judgement Hall (x=3080) for [E] Talk interaction."""
+        boss_x = 3080.0
+        floor_y = self.get_floor_y_at(boss_x, default=656)
+        self.spawn_boss(boss_cls=Sans, floor_y=floor_y, start_x=boss_x)
+        self.boss.arena_left_x = 2160.0
+        self.boss.arena_right_x = 3580.0
+        self.boss.start_pre_battle_wait()
+
+    def update_camera(self, raw_dt=1 / 60):
         # Stage 3 (Vergil 1376x768) uses fixed centered camera;
-        # Stage 2 (Sans 1.2x expanded 1664x928) & Stage 1 smoothly follow player within map bounds!
+        # During Boss INTRO cutscene, smoothly pan & lock camera dead-center onto the Boss!
+        # Otherwise smoothly follow player within map (or Judgement Hall) bounds.
         if self.is_vergil_arena():
             self.camera_x = (self.game_map.width - WIDTH) // 2
             self.camera_y = (self.game_map.height - HEIGHT) // 2
-        else:
-            player_rect = getattr(self.player, "collision_rect", self.player.rect)
-            self.camera_x, self.camera_y = self.game_map.get_camera_offset(
-                player_rect, WIDTH, HEIGHT
-            )
+            return
+
+        max_cam_x = max(0, self.game_map.width - WIDTH)
+        max_cam_y = max(0, self.game_map.height - HEIGHT)
+
+        if self.is_boss_intro_active() and self.boss is not None:
+            boss_rect = getattr(self.boss, "hurtbox", self.boss.rect)
+            target_x = max(0.0, min(float(max_cam_x), float(boss_rect.centerx - WIDTH // 2)))
+            target_y = max(0.0, min(float(max_cam_y), float(boss_rect.centery - HEIGHT // 2)))
+            lerp_k = min(1.0, raw_dt * 8.0)
+            self.camera_x = int(round(self.camera_x + (target_x - self.camera_x) * lerp_k))
+            self.camera_y = int(round(self.camera_y + (target_y - self.camera_y) * lerp_k))
+            return
+
+        player_rect = getattr(self.player, "collision_rect", self.player.rect)
+        cam_x, cam_y = self.game_map.get_camera_offset(player_rect, WIDTH, HEIGHT)
+        if (
+            self.is_main_world()
+            and self.sans_encounter_started
+            and not self.boss_defeated.get("sans", False)
+        ):
+            cam_x = max(2110, cam_x)
+        self.camera_x, self.camera_y = cam_x, cam_y
 
     def spawn_boss_victory_checkpoint(self):
         """
@@ -542,9 +634,22 @@ class Game:
                 self.stage_cleared = True
                 self._rebuild_sprite_groups()
         elif self.is_main_world():
-            # Stage 1: Slime Exploration & Pogo Practice (NO Sans here!)
+            # Seamless Stage 1: Golden Antechamber / Slime Outpost (x=0..1960) -> Judgement Hall / Sans (x=2120..3680)
             self.boss = None
+            self.sans_encounter_started = False
+            self.dialogue_box.active = False
+            self.outpost_barrier_rect = None
+            self.judgement_hall_lock_rect = None
             self.respawn_regular_enemies()
+            if not self.outpost_cleared:
+                self.outpost_barrier_rect = pygame.Rect(1960, 400, 32, 256)
+                self.game_map.collisions.append(self.outpost_barrier_rect)
+            if self.boss_defeated.get("sans", False):
+                self.level_cleared = True
+                self.stage_cleared = True
+            else:
+                # Spawn Sans peacefully waiting inside Judgement Hall for [E] Talk interaction!
+                self._spawn_peaceful_judgement_sans()
         else:
             self.boss = None
             self.regular_enemies.empty()
@@ -598,6 +703,8 @@ class Game:
             self.checkpoints = []
             self.active_checkpoint = None
             self.main_boss_defeated = False
+            self.outpost_cleared = False
+            self.sans_encounter_started = False
             self.boss_defeated = {"sans": False, "vergil": False}
             self.cleared_stages = {}
             self.level_cleared = False
@@ -625,6 +732,10 @@ class Game:
         self.screen_dim_timer = 0.0
         self.zoom_scale = 1.0
         self.transition_cooldown = 0.0
+        self.rift_cutscene_active = False
+        self.rift_cutscene_timer = 0.0
+        self.rift_cutscene_stage = 0
+        self.rift_blackout_alpha = 0
 
         if self.hud is None:
             self.hud = HUD(self.player, self.boss, is_tutorial=self.is_tutorial)
@@ -689,6 +800,18 @@ class Game:
         if self.transition.is_transitioning or self.player.is_teleporting:
             return
 
+        # 0. Active [E] Talk Interaction with Peaceful Sans in Judgement Hall
+        if (
+            self.is_main_world()
+            and not self.sans_encounter_started
+            and not self.boss_defeated.get("sans", False)
+            and self.boss is not None
+            and isinstance(self.boss, Sans)
+            and self.boss.can_talk(self.player)
+        ):
+            self._trigger_seamless_sans_encounter()
+            return
+
         # 1. Checkpoint Interaction ([E] Save & Heal)
         for cp in self.checkpoints:
             if cp.can_interact:
@@ -723,6 +846,9 @@ class Game:
                 self.player, self.triggers, self.boss
             )
             if portal_trigger is not None:
+                if self.is_tutorial:
+                    self.start_tutorial_rift_cutscene()
+                    return
                 self.player.is_teleporting = True
                 self.audio.play_sfx("portal_warp")
                 self.vfx_group.add(
@@ -907,6 +1033,8 @@ class Game:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
+            elif event.type == getattr(pygame, "WINDOWFOCUSGAINED", -1):
+                self._disable_windows_ime()
 
             # ---------- 1. Main Menu ----------
             if self.state == State.MENU:
@@ -985,6 +1113,14 @@ class Game:
 
             # ---------- 4. Gameplay ----------
             elif self.state == State.PLAYING:
+                if self.dialogue_box.active:
+                    if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                        self.pause_menu.selected = 0
+                        self.state = State.PAUSED
+                    else:
+                        self.dialogue_box.handle_event(event)
+                    continue
+
                 if event.type == pygame.KEYDOWN:
                     if event.key in (pygame.K_F1, pygame.K_TAB):
                         self.debug_mode = not self.debug_mode
@@ -1018,25 +1154,25 @@ class Game:
                         not self.player.is_teleporting
                         and not self.transition.is_transitioning
                         and not self.is_boss_intro_active()
+                        and not self.rift_cutscene_active
                     ):
                         if event.key == pygame.K_e:
                             self.handle_interact_key()
+                        elif event.key == pygame.K_q:
+                            self.player.start_dash()
+                        elif event.key == pygame.K_r:
+                            self.player.start_drink_flask()
                         elif event.key in (pygame.K_w, pygame.K_SPACE, pygame.K_UP):
                             keys = pygame.key.get_pressed()
                             down_held = bool(keys[pygame.K_s] or keys[pygame.K_DOWN])
                             self.player.jump(down_pressed=down_held)
-                        elif event.key in (pygame.K_j, pygame.K_LSHIFT):
-                            self.player.start_block()
-
-                elif event.type == pygame.KEYUP:
-                    if event.key in (pygame.K_j, pygame.K_LSHIFT):
-                        self.player.stop_block()
 
                 elif (
                     event.type == pygame.MOUSEBUTTONDOWN
                     and not self.player.is_teleporting
                     and not self.transition.is_transitioning
                     and not self.is_boss_intro_active()
+                    and not self.rift_cutscene_active
                 ):
                     if event.button == 1:
                         keys = pygame.key.get_pressed()
@@ -1090,6 +1226,8 @@ class Game:
 
             if hb.owner == "player":
                 for enemy in list(self.enemies):
+                    if getattr(enemy, "waiting_for_dialogue", False):
+                        continue
                     if (
                         enemy.alive()
                         and hb.can_hit(enemy)
@@ -1157,6 +1295,174 @@ class Game:
                         if attacker.alive() and hasattr(attacker, "on_parried"):
                             attacker.on_parried()
 
+    def start_tutorial_rift_cutscene(self):
+        """
+        Launch Indie Cross Episode 1–inspired Dimensional Cross-Star Rift Swallow Cutscene
+        at the end of the Tutorial Level (4-beat pacing, total duration 5.20s).
+        """
+        if self.rift_cutscene_active:
+            return
+        self.rift_cutscene_active = True
+        self.rift_cutscene_timer = 0.0
+        self.rift_cutscene_stage = 1
+        self.rift_blackout_alpha = 0
+
+        # Stop player & turn around in alert facing the tearing rift behind them
+        self.player.velocity_x = 0.0
+        self.player.velocity_y = 0.0
+        self.player.holding_move_key = False
+        self.player.is_attacking = False
+        self.player.is_blocking = False
+        self.player.facing_right = False
+        self.player.flip = True
+        self.player.sync_boxes()
+
+        rx = self.player.pos_x - 105.0
+        ry = self.player.pos_y - 112.0
+        self.rift_pos = [rx, ry]
+        self.vfx_group.add(DimensionalRiftVFX(rx, ry, duration=4.32, mode="swallow"))
+        self.vfx_group.add(
+            FloatingTextVFX(
+                self.player.pos_x,
+                self.player.hurtbox.top - 18,
+                text="!?",
+                color=(255, 85, 105),
+                outline_color=(10, 8, 16),
+                font_size=26,
+                duration=1.35,
+                rise_speed=22.0,
+            )
+        )
+        self.screen_shake_timer = 1.60
+        self.screen_shake_intensity = 2.5
+        self.audio.play_sfx("blaster_charge")
+        self.audio.play_sfx("encounter")
+
+    def _update_tutorial_rift_cutscene(self, raw_dt):
+        """
+        Drive the 4-beat Indie Cross Dimensional Rift Cutscene (total 5.20s):
+        - Stage 1 (0.00s .. 1.60s): Spatial anomaly & slow cross-star tear behind alert player
+        - Stage 2 (1.60s .. 3.40s): Cross-star expansion, gravity rings & player lifted/pulled in
+        - Stage 3 (3.40s .. 4.30s): Swallow climax, Red/Black/White Impact Frames & Screen Shatter
+        - Stage 4 (4.30s .. 5.20s): Blackout shrinking center star -> fade into main_world.tmx mid-air drop!
+        """
+        self.rift_cutscene_timer += raw_dt
+        t = self.rift_cutscene_timer
+
+        for vfx in list(self.vfx_group):
+            vfx.update(raw_dt)
+
+        if self.rift_cutscene_stage == 1:
+            # 0.00s .. 1.60s: Rift slowly tears open & hums behind alert player
+            if t >= 1.60:
+                self.rift_cutscene_stage = 2
+                self.audio.play_sfx("blaster_charge")
+                self.audio.play_sfx("portal_warp")
+                self.screen_shake_timer = max(self.screen_shake_timer, 1.80)
+                self.screen_shake_intensity = 5.5
+
+        elif self.rift_cutscene_stage == 2:
+            # 1.60s .. 3.40s: Strong gravity suction lifts & pulls struggling player toward rift core
+            p = min(1.0, (t - 1.60) / 1.80)
+            pull_k = min(1.0, raw_dt * (1.2 + 4.8 * p * p))
+            struggle_x = math.sin(t * 28.0) * 3.5 * (1.0 - p * 0.6)
+            struggle_y = math.cos(t * 24.0) * 3.0 * (1.0 - p * 0.6)
+            self.player.pos_x += (self.rift_pos[0] - self.player.pos_x) * pull_k + struggle_x * raw_dt * 12.0
+            self.player.pos_y += (self.rift_pos[1] + 24.0 - self.player.pos_y) * pull_k + struggle_y * raw_dt * 12.0
+            self.player.on_ground = False
+            self.player.sync_boxes()
+
+            if t >= 3.40:
+                self.rift_cutscene_stage = 3
+                self.audio.play_sfx("jce_shatter")
+                self.screen_shake_timer = max(self.screen_shake_timer, 0.95)
+                self.screen_shake_intensity = 11.5
+
+        elif self.rift_cutscene_stage == 3:
+            # 3.40s .. 4.30s: Swallowed into core + Red/Black/White Impact Frames & Screen Shatter
+            self.player.pos_x = self.rift_pos[0]
+            self.player.pos_y = self.rift_pos[1] + 24.0
+            self.player.sync_boxes()
+
+            if t >= 4.30:
+                # Stage 4: Pitch-black cut with shrinking center cross-star & map switch to main_world.tmx!
+                self.rift_cutscene_stage = 4
+                self.rift_blackout_alpha = 255
+                self.screen_shake_intensity = 7.0
+                self.audio.play_sfx("portal_warp")
+
+                target_trigger = MapTrigger(
+                    rect=(0, 0, 0, 0),
+                    target_map=MAIN_WORLD_PATH,
+                    spawn_pos=(140.0, 640.0),
+                )
+                change_map(self, target_trigger, GameMap)
+                self.setup_map_state()
+                # Position player in mid-air inside the lingering arrival rift to drop onto the floor!
+                self.player.ground_y = float(self.get_floor_y_at(140.0, default=640))
+                self.player.pos_x = 140.0
+                self.player.pos_y = 395.0
+                self.player.velocity_x = 0.0
+                self.player.velocity_y = 55.0
+                self.player.on_ground = False
+                self.player.facing_right = True
+                self.player.flip = False
+                self.player.sync_boxes()
+                self.vfx_group.add(
+                    DimensionalRiftVFX(140.0, 385.0, duration=1.15, mode="arrival")
+                )
+                self.update_camera(raw_dt)
+
+        elif self.rift_cutscene_stage == 4:
+            # 4.30s .. 4.65s hold black with shrinking center star -> 4.65s .. 5.20s fade in & safe drop!
+            if t < 4.65:
+                self.rift_blackout_alpha = 255
+            else:
+                fade_p = min(1.0, (t - 4.65) / 0.55)
+                self.rift_blackout_alpha = int(255 * (1.0 - fade_p))
+                self.player.update(
+                    dt=raw_dt,
+                    raw_dt=raw_dt,
+                    active_hitboxes=self.active_hitboxes,
+                    vfx_group=self.vfx_group,
+                    map_width=self.game_map.width,
+                )
+                self.update_camera(raw_dt)
+            if t >= 5.20:
+                self.rift_cutscene_active = False
+                self.rift_blackout_alpha = 0
+                self.rift_cutscene_stage = 0
+                self.player.status_text = "GOLDEN ANTECHAMBER — CLEAR THE SLIMERS"
+                self.player.status_timer = 1.8
+
+        self.hud.update(raw_dt)
+
+    def _on_sans_dialogue_finished(self):
+        """Called the instant the final Pre-Boss Dialogue line closes: locks Hall, launches Sans Intro + Megalovania!"""
+        if self.judgement_hall_lock_rect is None:
+            self.judgement_hall_lock_rect = pygame.Rect(2100, 320, 28, 336)
+            self.game_map.collisions.append(self.judgement_hall_lock_rect)
+        if self.boss is not None and isinstance(self.boss, Sans):
+            self.boss.begin_intro_cutscene()
+            self.audio.play_bgm("sans_theme", volume=0.32)
+
+    def _trigger_seamless_sans_encounter(self):
+        """Triggered by pressing [E] Talk near peaceful Sans: opens Undertale Pre-Boss Dialogue."""
+        self.sans_encounter_started = True
+        if self.boss is None or not isinstance(self.boss, Sans) or not self.boss.alive():
+            self._spawn_peaceful_judgement_sans()
+        self.boss.start_pre_battle_wait()
+
+        self.dialogue_box.start(
+            [
+                "* it's a beautiful day outside.",
+                "* birds are singing, flowers are blooming...",
+                "* on days like these, kids like you...",
+                "* Should be burning in hell.",
+            ],
+            on_complete=self._on_sans_dialogue_finished,
+        )
+
     def update(self, raw_dt):
         # 1. Update transition animation (Iris Wipe / Respawn Fade)
         was_transitioning = self.transition.is_transitioning
@@ -1172,6 +1478,10 @@ class Game:
             for vfx in list(self.vfx_group):
                 vfx.update(raw_dt)
             self.hud.update(raw_dt)
+            return
+
+        if self.rift_cutscene_active:
+            self._update_tutorial_rift_cutscene(raw_dt)
             return
 
         self.player.god_mode = self.debug_mode
@@ -1199,9 +1509,10 @@ class Game:
         # 4. Update Bullet Time, Boss Intro 1.40x Camera Pan/Zoom & Recovery
         if self.is_boss_intro_active():
             intro_p = getattr(self.boss, "intro_progress", 0.0)
-            target_fx = float(self.boss.pos_x)
-            target_fy = float(self.boss.pos_y - 54.0)
-            lerp_k = min(1.0, raw_dt * 7.5)
+            boss_rect = getattr(self.boss, "hurtbox", self.boss.rect)
+            target_fx = float(boss_rect.centerx)
+            target_fy = float(boss_rect.centery)
+            lerp_k = min(1.0, raw_dt * 10.0)
             self.zoom_focus_world[0] += (target_fx - self.zoom_focus_world[0]) * lerp_k
             self.zoom_focus_world[1] += (target_fy - self.zoom_focus_world[1]) * lerp_k
 
@@ -1242,8 +1553,15 @@ class Game:
 
         scaled_dt = raw_dt * self.time_scale
 
-        # 5. Update Player (lock player controls during Boss INTRO cutscene)
-        if self.is_boss_intro_active():
+        # 5. Update Player (lock player controls during Boss INTRO cutscene or Pre-Boss Dialogue)
+        if self.dialogue_box.active:
+            self.dialogue_box.update(raw_dt)
+            self.player.velocity_x = 0.0
+            self.player.holding_move_key = False
+            self.player.is_attacking = False
+            self.player.is_blocking = False
+            self.player.sync_boxes()
+        elif self.is_boss_intro_active():
             self.player.velocity_x = 0.0
             self.player.holding_move_key = False
             self.player.is_attacking = False
@@ -1284,21 +1602,51 @@ class Game:
 
         if self.tutorial_manager is not None:
             self.tutorial_manager.update(scaled_dt)
+            if (
+                getattr(self.tutorial_manager, "gate3_open", False)
+                and not self.rift_cutscene_active
+                and self.player.pos_x >= 2880.0
+            ):
+                self.start_tutorial_rift_cutscene()
+                return
+
+        # Seamless Main World Progression: Outpost Barrier Unlock & Judgement Hall Pre-Boss Trigger!
+        if self.is_main_world():
+            if not self.outpost_cleared and len(self.regular_enemies) == 0:
+                self.outpost_cleared = True
+                if (
+                    self.outpost_barrier_rect is not None
+                    and self.outpost_barrier_rect in self.game_map.collisions
+                ):
+                    self.game_map.collisions.remove(self.outpost_barrier_rect)
+                self.outpost_barrier_rect = None
+                self.audio.play_sfx("level_clear")
+                self.vfx_group.add(
+                    PortalTeleportVFX(1976, 656, duration=0.75, mode="arrive")
+                )
+                self.player.status_text = "BARRIER OPEN! ENTER JUDGEMENT HALL >>"
+                self.player.status_timer = 1.6
 
         # Check Stage Clear Condition -> Persist boss_defeated & level_cleared, Unlock Portals & Spawn Victory Checkpoint!
         if not self.stage_cleared and self.check_stage_clear_condition():
             self.stage_cleared = True
             self.level_cleared = True
             self.cleared_stages[self.map_name()] = True
-            if self.is_sans_arena():
+            if self.is_sans_arena() or (self.is_main_world() and self.sans_encounter_started):
                 self.boss_defeated["sans"] = True
+                if (
+                    self.judgement_hall_lock_rect is not None
+                    and self.judgement_hall_lock_rect in self.game_map.collisions
+                ):
+                    self.game_map.collisions.remove(self.judgement_hall_lock_rect)
+                self.judgement_hall_lock_rect = None
             elif self.is_vergil_arena():
                 self.boss_defeated["vergil"] = True
             unlocked_any = False
             for trigger in self.triggers:
                 if trigger.unlock(vfx_group=self.vfx_group):
                     unlocked_any = True
-            if self.is_boss_arena():
+            if self.is_boss_arena() or (self.is_main_world() and self.boss_defeated.get("sans", False)):
                 self.spawn_boss_victory_checkpoint()
                 self.audio.stop_bgm(fadeout_ms=1100)
             if unlocked_any:
@@ -1317,7 +1665,7 @@ class Game:
 
         # 10. Update HUD & Camera
         self.hud.update(raw_dt)
-        self.update_camera()
+        self.update_camera(raw_dt)
 
         # 11. Handle Boss Arena outcome or Soul-like Death Respawn
         if self.is_boss_arena():
@@ -1330,7 +1678,7 @@ class Game:
             self.main_menu.draw(self.screen)
             self.hud.draw_text(
                 self.screen,
-                "A/D: Move | W/SPACE: Jump | LMB: Attack | Air S+LMB: Pogo | RMB/J: Parry | E: Interact | F1: Debug",
+                "A/D: Move | W/SPACE: Jump | Q: Dash | [Left Click] Attack | Air S+[Left Click] Pogo | [Right Click] Parry | E: Interact | F1: Debug",
                 self.hud.font_hud,
                 (160, 190, 230),
                 (WIDTH // 2, 650),
@@ -1359,11 +1707,36 @@ class Game:
                     shake_dx = random.randint(-mag, mag)
                     shake_dy = random.randint(-mag, mag)
 
-            active_bg = self.sans_background if self.is_sans_arena() else self.background
-            self.world_surface.blit(active_bg, (shake_dx, shake_dy))
+            if self.is_sans_arena():
+                self.world_surface.blit(self.sans_background, (shake_dx, shake_dy))
+            elif self.is_main_world():
+                # Smooth golden-amber background cross-fade: Antechamber Outpost -> Bright Judgement Hall!
+                self.world_surface.blit(self.outpost_background, (shake_dx, shake_dy))
+                blend = max(0.0, min(1.0, (self.camera_x - 1600.0) / 520.0))
+                if blend > 0.02:
+                    if blend >= 0.99:
+                        self.world_surface.blit(self.sans_background, (shake_dx, shake_dy))
+                    else:
+                        fg_bg = self.sans_background.copy()
+                        fg_bg.set_alpha(int(255 * blend))
+                        self.world_surface.blit(fg_bg, (shake_dx, shake_dy))
+            else:
+                self.world_surface.blit(self.background, (shake_dx, shake_dy))
             self.game_map.draw(
                 self.world_surface, self.camera_x - shake_dx, self.camera_y - shake_dy
             )
+
+            # Draw Outpost Energy Barrier Gate (x=1960) while locked
+            if self.outpost_barrier_rect is not None and not self.outpost_cleared:
+                br = self.outpost_barrier_rect.move(-self.camera_x, -self.camera_y)
+                bar_surf = pygame.Surface((br.width, br.height), pygame.SRCALPHA)
+                bar_surf.fill((40, 195, 255, 115))
+                self.world_surface.blit(bar_surf, br.topleft)
+                pygame.draw.rect(self.world_surface, (110, 240, 255), br, 3)
+                b_lbl = self.font_hud.render("CLEAR SLIMERS", False, (195, 248, 255))
+                self.world_surface.blit(
+                    b_lbl, b_lbl.get_rect(center=(br.centerx, br.top - 14))
+                )
 
             # 1. Draw Guided Tutorial world elements (gates, spikes, signposts, dummy/guardian UI)
             if self.tutorial_manager is not None:
@@ -1380,14 +1753,15 @@ class Game:
                     self.font_prompt,
                     is_active=(cp is self.active_checkpoint),
                 )
-            for trigger in self.triggers:
-                trigger.draw(
-                    self.world_surface,
-                    self.camera_x,
-                    self.camera_y,
-                    self.font_prompt,
-                    boss=self.boss,
-                )
+            if not self.is_tutorial:
+                for trigger in self.triggers:
+                    trigger.draw(
+                        self.world_surface,
+                        self.camera_x,
+                        self.camera_y,
+                        self.font_prompt,
+                        boss=self.boss,
+                    )
 
             # 3. Perfect Parry background dimming layer
             if self.screen_dim_timer > 0.0 or self.time_scale < 0.95:
@@ -1427,6 +1801,25 @@ class Game:
             for mob in self.regular_enemies:
                 if mob.alive() and hasattr(mob, "draw_hp_bar"):
                     mob.draw_hp_bar(self.world_surface, self.camera_x, self.camera_y)
+
+            # 5b. Floating '[E] Talk' prompt above peaceful Sans before battle starts
+            if (
+                self.is_main_world()
+                and not self.sans_encounter_started
+                and not self.dialogue_box.active
+                and self.boss is not None
+                and isinstance(self.boss, Sans)
+                and self.boss.can_talk(self.player)
+            ):
+                draw_floating_prompt_box(
+                    self.world_surface,
+                    self.boss.pos_x,
+                    self.boss.hurtbox.top - 22,
+                    self.camera_x,
+                    self.camera_y,
+                    "[E] Talk",
+                    self.font_prompt,
+                )
 
             # 6. Draw all VFX (Midground Slashes, Heal particles, Portal particles, Pixel Ink-Splash Parry)
             for vfx in self.vfx_group:
@@ -1566,15 +1959,21 @@ class Game:
                 )
                 self.screen.blit(info_surf, (24, HEIGHT - 36))
 
-            if self.is_main_world():
+            if self.is_main_world() and not (
+                self.boss is not None and self.boss.alive()
+            ):
                 total_slimes = max(1, len(self.regular_enemy_spawns))
                 rem_slimes = len(self.regular_enemies)
-                if not self.level_cleared and rem_slimes > 0:
-                    obj_text = f"STAGE 1: DEFEAT ALL SLIMERS ({total_slimes - rem_slimes} / {total_slimes})"
+                if not self.outpost_cleared and rem_slimes > 0:
+                    obj_text = f"SLIME OUTPOST: DEFEAT ALL SLIMERS ({total_slimes - rem_slimes} / {total_slimes})"
                     obj_col = (195, 245, 210)
                     border_col = (90, 210, 125)
+                elif not self.boss_defeated.get("sans", False):
+                    obj_text = "BARRIER OPEN! ADVANCE RIGHT TO JUDGEMENT HALL >>"
+                    obj_col = (255, 230, 115)
+                    border_col = (255, 200, 65)
                 else:
-                    obj_text = "STAGE 1 CLEAR! PORTAL OPEN — ENTER TO FACE SANS"
+                    obj_text = "SANS DEFEATED! ENTER PORTAL TO FACE VERGIL"
                     obj_col = (120, 245, 255)
                     border_col = (90, 225, 255)
                 obj_surf = self.hud.font_hud.render(obj_text, False, obj_col)
@@ -1659,9 +2058,36 @@ class Game:
 
         # Layer 3 Foreground Screen-Breaking VFX Overlay (above ALL entities, camera zoom, and HUD!)
         if self.state in (State.PLAYING, State.PAUSED):
+            # Undertale Sans Rapid-Teleportation brief 0.07s blackout cut frame
+            if self.boss is not None and getattr(self.boss, "screen_blackout_timer", 0.0) > 0.0:
+                self.screen.fill((0, 0, 0))
+
             for vfx in self.vfx_group:
                 if hasattr(vfx, "draw_screen_overlay"):
                     vfx.draw_screen_overlay(self.screen)
+
+            # Indie Cross Tutorial Rift Cutscene blackout / shrinking center cross-star / fade-in overlay
+            if self.rift_blackout_alpha > 0:
+                bo = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+                bo.fill((0, 0, 0, max(0, min(255, self.rift_blackout_alpha))))
+                self.screen.blit(bo, (0, 0))
+                if self.rift_cutscene_active and self.rift_cutscene_stage == 4 and self.rift_cutscene_timer < 4.65:
+                    # Shrinking glowing 4-point cross-star point at screen center during blackout hold
+                    sp = max(0.0, 1.0 - (self.rift_cutscene_timer - 4.30) / 0.35)
+                    outer_r = max(3.0, 72.0 * (sp * sp))
+                    inner_r = max(1.0, 12.0 * (sp * sp))
+                    cx, cy = WIDTH // 2, HEIGHT // 2
+                    pts = []
+                    for i in range(8):
+                        ang = i * (math.pi * 0.25)
+                        r = outer_r if i % 2 == 0 else inner_r
+                        pts.append((int(round(cx + math.cos(ang) * r)), int(round(cy + math.sin(ang) * r))))
+                    pygame.draw.polygon(self.screen, (255, 50, 80), pts)
+                    pygame.draw.circle(self.screen, (255, 255, 255), (cx, cy), max(2, int(6 * sp)))
+
+            # Undertale Pre-Boss Dialogue Box (bottom-center black box / white pixel border)
+            if self.dialogue_box.active:
+                self.dialogue_box.draw(self.screen)
 
             # Programmatic Pixel-Font Boss Title Card ('The weakest ?' / 'Sans') with smooth 2.0s pacing
             if self.boss is not None and getattr(self.boss, "title_card_active", False):

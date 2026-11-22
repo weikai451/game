@@ -1,77 +1,62 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<map version="1.10" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="220" height="50" tilewidth="16" tileheight="16" infinite="0" nextlayerid="19" nextobjectid="50">
- <imagelayer id="6" name="door" opacity="0.99" offsetx="2112" offsety="192" mode="darken">
-  <image source="../Background/iloveimg-resized (1)/1794374766507.png" width="1080" height="552"/>
- </imagelayer>
- <imagelayer id="12" name="island_mid" offsetx="1872" offsety="480">
-  <image source="../Background/floor4.png" width="333" height="223"/>
- </imagelayer>
- <imagelayer id="9" name="floor_main">
-  <image source="../Background/floor1.png" width="1376" height="768"/>
- </imagelayer>
- <imagelayer id="10" name="f2" offsetx="1376" offsety="560">
-  <image source="../Background/floor 3.png" width="479" height="150"/>
- </imagelayer>
- <imagelayer id="13" name="f3" offsetx="2144" offsety="608">
-  <image source="../Background/floor 3.png" width="479" height="150"/>
- </imagelayer>
- <imagelayer id="18" name="f4" offsetx="2976" offsety="592">
-  <image source="../Background/floor 3.png" width="479" height="150"/>
- </imagelayer>
+<map version="1.10" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="230" height="50" tilewidth="16" tileheight="16" infinite="0" nextlayerid="20" nextobjectid="60">
  <objectgroup id="3" name="Collisions">
-  <!-- Solid Left & Right World Boundaries -->
+  <!-- Solid Left & Right World Boundaries (3680 x 800 Seamless Golden Hall World!) -->
   <object id="1" x="-32" y="0" width="48" height="800"/>
-  <object id="2" x="3456" y="0" width="64" height="800"/>
+  <object id="2" x="3632" y="0" width="64" height="800"/>
 
-  <!-- Continuous Solid Ground Floors -->
-  <object id="12" x="0" y="640" width="1856" height="96"/>
-  <object id="23" x="1856" y="656" width="304" height="96"/>
-  <object id="24" x="2160" y="688" width="832" height="96"/>
-  <object id="33" x="2992" y="672" width="480" height="96"/>
+  <!-- PART A: Golden Antechamber / Slime Outpost Floors (x=0..2120) -->
+  <object id="12" x="0" y="640" width="1856" height="160"/>
+  <object id="23" x="1856" y="656" width="264" height="144"/>
 
-  <!-- Pre-drawn Stone Bridges in floor1.png (invisible_art=true so no stray box is drawn over art) -->
+  <!-- PART B: Seamless Judgement Hall Floor (x=2120..3648, y=656) -->
+  <object id="24" x="2120" y="656" width="1528" height="144"/>
+
+  <!-- Antechamber Golden Marble One-Way Platforms (including 2x Pogo practice ledges) -->
   <object id="9" x="672" y="560" width="160" height="16">
    <properties>
     <property name="one_way" type="bool" value="true"/>
-    <property name="invisible_art" type="bool" value="true"/>
    </properties>
   </object>
   <object id="7" x="832" y="496" width="368" height="16">
    <properties>
     <property name="one_way" type="bool" value="true"/>
-    <property name="invisible_art" type="bool" value="true"/>
    </properties>
   </object>
-
-  <!-- Cohesive One-Way / Drop-Through Stone Platforms on Right Half (88~96px jump reach) -->
-  <object id="19" x="1568" y="544" width="192" height="16">
+  <object id="19" x="1504" y="544" width="192" height="16">
    <properties>
     <property name="one_way" type="bool" value="true"/>
    </properties>
   </object>
-  <object id="30" x="1920" y="552" width="192" height="16">
-   <properties>
-    <property name="one_way" type="bool" value="true"/>
-   </properties>
-  </object>
-  <object id="25" x="2272" y="584" width="192" height="16">
-   <properties>
-    <property name="one_way" type="bool" value="true"/>
-   </properties>
-  </object>
-  <!-- Elevated Pogo Shortcut Platform above Slimer Practice Zone 2 (2x Pogo reach from y=688) -->
-  <object id="34" x="2472" y="488" width="160" height="16">
+  <object id="30" x="1720" y="464" width="160" height="16">
    <properties>
     <property name="one_way" type="bool" value="true"/>
    </properties>
   </object>
 
-  <!-- Portal to Stage 2: Sans Boss Arena (Unlocked after clearing all Slimers) -->
-  <object id="20" x="2560" y="480" width="128" height="208">
+  <!-- Judgement Hall 3 Strategic One-Way Battle Platforms (for dodging Sans) -->
+  <object id="35" x="2360" y="552" width="224" height="16">
    <properties>
-    <property name="spawn_x" type="int" value="260"/>
-    <property name="spawn_y" type="int" value="784"/>
-    <property name="target" value="sans_arena.tmx"/>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+  <object id="36" x="2760" y="464" width="240" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+  <object id="37" x="3160" y="552" width="224" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+
+  <!-- Exit Portal to Final Stage: Vergil Boss Arena (Unlocked ONLY after defeating Sans!) -->
+  <object id="20" x="3420" y="528" width="96" height="128">
+   <properties>
+    <property name="spawn_x" type="int" value="280"/>
+    <property name="spawn_y" type="int" value="656"/>
+    <property name="target" value="boss1_arena.tmx"/>
    </properties>
   </object>
  </objectgroup>
@@ -81,14 +66,10 @@
     <property name="order" type="int" value="1"/>
    </properties>
   </object>
-  <object id="41" x="2176" y="592" width="56" height="96">
+  <!-- Pre-Judgement Hall Checkpoint (directly behind the Outpost Barrier Gate at x=1960!) -->
+  <object id="41" x="2040" y="560" width="56" height="96">
    <properties>
     <property name="order" type="int" value="2"/>
-   </properties>
-  </object>
-  <object id="42" x="3040" y="576" width="64" height="96">
-   <properties>
-    <property name="order" type="int" value="3"/>
    </properties>
   </object>
  </objectgroup>

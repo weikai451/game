@@ -1,12 +1,40 @@
+import os
 import pygame
 import pytmx
 from collision import CollisionSystem
+
+_MAP_TILE_CACHE = {}
+
+
+def _load_cached_tile(path):
+    if path in _MAP_TILE_CACHE:
+        return _MAP_TILE_CACHE[path]
+    surf = None
+    if os.path.exists(path):
+        try:
+            surf = pygame.image.load(path).convert_alpha()
+        except Exception:
+            surf = None
+    _MAP_TILE_CACHE[path] = surf
+    return surf
 
 
 class GameMap:
     def __init__(self, map_path):
         self.map_path = map_path
         self.tmx_data = pytmx.load_pygame(map_path)
+        lower_path = map_path.lower()
+        self.is_golden_hall = ("main_world" in lower_path) or ("sans_arena" in lower_path)
+        self.gold_floor_tile = (
+            _load_cached_tile(os.path.join("assets", "tiles", "gold_hall_floor.png"))
+            if self.is_golden_hall
+            else None
+        )
+        self.gold_platform_tile = (
+            _load_cached_tile(os.path.join("assets", "tiles", "gold_hall_platform.png"))
+            if self.is_golden_hall
+            else None
+        )
 
         # Map dimensions
         self.tile_width = self.tmx_data.tilewidth
@@ -155,13 +183,51 @@ class GameMap:
                         continue
                     screen.blit(image, (screen_x, screen_y))
 
-        # 2. Render 3-part pixel-art stone platforms (left end-cap, tiled middle bricks, right end-cap)
+        # 1b. In Golden Hall stages (main_world / sans_arena), render cohesive warm-amber tiled stone floors
+        if self.is_golden_hall:
+            for col_rect in self.collisions:
+                # Render only horizontal floor slabs (skip vertical walls / narrow barrier gates)
+                if col_rect.width < 120 or col_rect.top < 420:
+                    continue
+                sr = col_rect.move(-camera_x, -camera_y)
+                if sr.right < 0 or sr.left > sw or sr.bottom < 0 or sr.top > sh:
+                    continue
+                if self.gold_floor_tile is not None:
+                    tw = self.gold_floor_tile.get_width()
+                    th = self.gold_floor_tile.get_height()
+                    clip_prev = screen.get_clip()
+                    screen.set_clip(sr.clip(screen.get_rect()))
+                    start_x = sr.left - (sr.left % tw)
+                    for ty in range(sr.top, sr.bottom, th):
+                        for tx in range(start_x, sr.right, tw):
+                            screen.blit(self.gold_floor_tile, (tx, ty))
+                    screen.set_clip(clip_prev)
+                    # Crisp warm-gold top trim & subtle pillar-base border
+                    pygame.draw.line(screen, (250, 214, 122), (sr.left, sr.top), (sr.right, sr.top), 2)
+                    pygame.draw.line(screen, (42, 26, 14), (sr.left, sr.top + 13), (sr.right, sr.top + 13), 1)
+                else:
+                    pygame.draw.rect(screen, (88, 58, 32), sr)
+                    pygame.draw.rect(screen, (230, 185, 95), (sr.x, sr.y, sr.width, 6))
+
+        # 2. Render 3-part pixel-art stone platforms (Golden Marble in main_world / sans_arena, Slate elsewhere)
         for plat in self.visible_platforms:
             sr = plat.move(-camera_x, -camera_y)
             if sr.right < 0 or sr.left > sw or sr.bottom < 0 or sr.top > sh:
                 continue
-            vis_h = 16
+            vis_h = 18 if self.is_golden_hall else 16
             body_rect = pygame.Rect(sr.x, sr.y, sr.width, vis_h)
+            if self.is_golden_hall and self.gold_platform_tile is not None:
+                tw = self.gold_platform_tile.get_width()
+                clip_prev = screen.get_clip()
+                screen.set_clip(body_rect.clip(screen.get_rect()))
+                for tx in range(sr.left, sr.right, tw):
+                    screen.blit(self.gold_platform_tile, (tx, sr.top))
+                screen.set_clip(clip_prev)
+                # Decorative gold end-caps & crisp dark bronze outline
+                pygame.draw.rect(screen, (224, 176, 86), (sr.x + 1, sr.y + 1, 8, vis_h - 2))
+                pygame.draw.rect(screen, (224, 176, 86), (sr.right - 9, sr.y + 1, 8, vis_h - 2))
+                pygame.draw.rect(screen, (38, 24, 14), body_rect, 2)
+                continue
             # Base stone body
             pygame.draw.rect(screen, (62, 58, 72), body_rect)
             # Top sandstone/cyan highlight ledge

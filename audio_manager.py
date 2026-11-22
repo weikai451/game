@@ -23,6 +23,8 @@ class AudioManager:
         "footstep": (0.28, 230),
         "jump": (0.42, 90),
         "land": (0.45, 110),
+        "dash": (0.56, 120),
+        "heal_flask": (0.72, 200),
         "pogo_bounce": (0.68, 90),
         "player_hurt": (0.62, 120),
         "player_death": (0.78, 400),
@@ -32,6 +34,7 @@ class AudioManager:
         "slime_death": (0.64, 100),
         # Sans
         "encounter": (0.62, 200),
+        "sans_blip": (0.52, 55),
         "bone_shoot": (0.42, 90),
         "blaster_charge": (0.50, 180),
         "blaster_fire": (0.68, 180),

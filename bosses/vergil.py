@@ -1,4 +1,5 @@
 import math
+import random
 import pygame
 from Settings import GROUND_Y
 from VFX import (
@@ -36,7 +37,7 @@ class Vergil(BaseBoss):
             start_x=start_x,
             ground_y=ground_y,
             game_map=game_map,
-            max_hp=120,
+            max_hp=200,
             move_speed=225.0,
             collision_size=(42, 104),
             hurtbox_size=(36, 98),
@@ -111,6 +112,27 @@ class Vergil(BaseBoss):
                 BossState.JUDGEMENT_CUT_END,
             ):
                 self.animator.play("Attack1", force_reset=True)
+
+            # Phase 2 Dual-Skill Combo (60% chance, max 2 concurrent skills; Judgement Cut End stays solo!)
+            if (
+                self.phase >= 2
+                and new_state != BossState.JUDGEMENT_CUT_END
+                and self.pending_secondary_skill is None
+                and random.random() < 0.60
+            ):
+                pair_map = {
+                    BossState.ATTACK_1: ("mirage_blades", "single_jc"),
+                    BossState.ATTACK_2: ("mirage_blades", "single_jc"),
+                    BossState.ATTACK_3: ("mirage_blades",),
+                    BossState.ATTACK_4: ("mirage_blades", "single_jc"),
+                    BossState.ATTACK_5: ("mirage_blades",),
+                    BossState.ATTACK_6: ("single_jc",),
+                }
+                choices = pair_map.get(new_state)
+                if choices:
+                    self.schedule_secondary_skill(
+                        random.choice(choices), delay=random.uniform(0.16, 0.28)
+                    )
         elif new_state == BossState.INTRO:
             self.attack_phase = AttackPhase.NONE
             self.intro_progress = 0.0
@@ -280,7 +302,7 @@ class Vergil(BaseBoss):
                     vertical_offset=-50.0,
                     width=96,
                     height=78,
-                    damage=15,
+                    damage=13,
                     duration=0.16,
                     color_outer=(50, 160, 255),
                 )
@@ -298,7 +320,7 @@ class Vergil(BaseBoss):
                     vertical_offset=-52.0,
                     width=112,
                     height=86,
-                    damage=20,
+                    damage=17,
                     duration=0.17,
                     color_outer=(120, 90, 255),
                 )
@@ -340,7 +362,7 @@ class Vergil(BaseBoss):
                 hb = Hitbox(
                     owner="boss",
                     rect=hb_rect,
-                    damage=22,
+                    damage=19,
                     knockback_x=self.dash_dir * 300.0,
                     lifetime=active_end - windup_end,
                     tag="vergil_dash",
@@ -401,7 +423,7 @@ class Vergil(BaseBoss):
                 wave_hb = Hitbox(
                     owner="boss",
                     rect=hb_rect,
-                    damage=18,
+                    damage=15,
                     knockback_x=direction * 240.0,
                     lifetime=1.35,
                     tag="vergil_projectile",
@@ -429,7 +451,7 @@ class Vergil(BaseBoss):
                         windup_time=0.45,
                         active_time=0.26,
                         recovery_time=0.18,
-                        damage=20,
+                        damage=17,
                         hitbox_list=active_hitboxes,
                     )
                     self.register_vfx(aoe_vfx, vfx_group)
@@ -474,7 +496,7 @@ class Vergil(BaseBoss):
                 hb = Hitbox(
                     owner="boss",
                     rect=hb_rect,
-                    damage=16,
+                    damage=14,
                     knockback_x=self.facing_dir * 165.0,
                     knockback_y=-650.0,
                     lifetime=0.20,
@@ -509,7 +531,7 @@ class Vergil(BaseBoss):
                     vertical_offset=-56.0,
                     width=106,
                     height=88,
-                    damage=14,
+                    damage=12,
                     duration=0.18,
                     color_outer=(95, 195, 255),
                 )
@@ -560,7 +582,7 @@ class Vergil(BaseBoss):
                     radius=88,
                     windup_time=0.46,
                     active_time=0.28,
-                    damage=18,
+                    damage=15,
                     hitbox_list=active_hitboxes,
                 )
                 self.register_vfx(vfx, vfx_group)
@@ -615,7 +637,7 @@ class Vergil(BaseBoss):
                         windup=0.38 + i * 0.14,
                         speed=680.0,
                         duration=1.25,
-                        damage=12,
+                        damage=10,
                         hitbox_list=active_hitboxes,
                     )
                     self.register_vfx(sword, vfx_group)
@@ -717,18 +739,18 @@ class Vergil(BaseBoss):
             if self.combo_step == 1 and self.state_timer >= 1.15:
                 self.combo_step = 2
                 self._spawn_jce_sphere_hitbox(
-                    active_hitboxes, damage=14, lifetime=0.22, tag="vergil_jce_slash"
+                    active_hitboxes, damage=12, lifetime=0.22, tag="vergil_jce_slash"
                 )
                 self.pending_screen_shake = max(self.pending_screen_shake, 0.22)
             elif self.combo_step == 2 and self.state_timer >= 1.55:
                 self.combo_step = 3
                 self._spawn_jce_sphere_hitbox(
-                    active_hitboxes, damage=14, lifetime=0.22, tag="vergil_jce_slash"
+                    active_hitboxes, damage=12, lifetime=0.22, tag="vergil_jce_slash"
                 )
             elif self.combo_step == 3 and self.state_timer >= 1.95:
                 self.combo_step = 4
                 self._spawn_jce_sphere_hitbox(
-                    active_hitboxes, damage=14, lifetime=0.22, tag="vergil_jce_slash"
+                    active_hitboxes, damage=12, lifetime=0.22, tag="vergil_jce_slash"
                 )
 
         elif self.state_timer < shatter_end:
@@ -741,7 +763,7 @@ class Vergil(BaseBoss):
                 get_audio().play_sfx("sheathe")
                 get_audio().play_sfx("jce_shatter")
                 self._spawn_jce_sphere_hitbox(
-                    active_hitboxes, damage=22, lifetime=0.24, tag="vergil_jce_finisher"
+                    active_hitboxes, damage=19, lifetime=0.24, tag="vergil_jce_finisher"
                 )
                 self.pending_screen_shake = max(self.pending_screen_shake, 0.55)
 
@@ -765,8 +787,62 @@ class Vergil(BaseBoss):
             self.attack_phase = AttackPhase.RECOVERY
             self.state_timer = 0.68
 
+    def _execute_secondary_skill(self, skill_id, active_hitboxes, vfx_group, map_width):
+        """Phase 2 concurrent secondary ranged skill (Mirage Blades or Single Judgement Cut)."""
+        if not self.alive() or self.state in (
+            BossState.INTRO,
+            BossState.PHASE_2_TRANSITION,
+            BossState.JUDGEMENT_CUT_END,
+        ):
+            return
+        tx = (
+            float(self.target.hurtbox.centerx)
+            if (self.target and self.target.alive())
+            else self.pos_x + self.facing_dir * 220.0
+        )
+        ty = (
+            float(self.target.hurtbox.centery)
+            if (self.target and self.target.alive())
+            else self.pos_y - 45.0
+        )
+        f_dir = self.facing_dir
+
+        if skill_id == "mirage_blades":
+            spawns = [
+                (self.pos_x - f_dir * 26.0, self.pos_y - 110.0),
+                (tx - f_dir * 105.0, ty - 150.0),
+                (tx + f_dir * 35.0, ty - 168.0),
+            ]
+            for i, (sx, sy) in enumerate(spawns):
+                sword = SummonedSwordVFX(
+                    x=sx,
+                    y=sy,
+                    target_x=tx,
+                    target_y=ty,
+                    windup=0.36 + i * 0.14,
+                    speed=680.0,
+                    duration=1.20,
+                    damage=10,
+                    hitbox_list=active_hitboxes,
+                )
+                self.register_vfx(sword, vfx_group)
+
+        elif skill_id == "single_jc":
+            get_audio().play_sfx("sheathe")
+            vfx = SingleJudgementCutVFX(
+                x=tx,
+                y=ty,
+                radius=84,
+                windup_time=0.46,
+                active_time=0.26,
+                damage=14,
+                hitbox_list=active_hitboxes,
+            )
+            self.register_vfx(vfx, vfx_group)
+
     def update(self, dt=1 / 60, active_hitboxes=None, vfx_group=None, map_width=1600):
         self._tick_common_timers(dt)
+        self.tick_secondary_skill(dt, active_hitboxes, vfx_group, map_width)
 
         # Trigger Phase 2 awakening the moment HP drops to/below 50%
         if (

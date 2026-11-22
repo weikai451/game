@@ -2738,6 +2738,182 @@ class SummonedSwordVFX(BaseVFX):
         screen.blit(self.blade_img, self.blade_img.get_rect(center=(sx, sy)))
 
 
+# =============================================================================
+# Indie Cross Dimensional Cross-Star Rift VFX (Tutorial Ending & Arrival Drop)
+# =============================================================================
+
+class DimensionalRiftVFX(BaseVFX):
+    """
+    Indie Cross Episode 1–inspired 4-Point Cross-Star Dimensional Rift:
+    - World Layer: Black-Red / Bright-Cyan glowing 4-point cross-star tear,
+      floating glitch pixel squares, and gravity suction rings.
+    - Screen Overlay Layer (swallow mode): High-Contrast Red/Black/White Impact Frames
+      & Screen Shatter fracture lines at swallow climax!
+    """
+
+    def __init__(self, x, y, duration=4.35, mode="swallow"):
+        super().__init__(x, y, duration=duration, hitbox=None)
+        self.mode = mode  # "swallow" or "arrival"
+        self.scale = 0.12 if mode == "swallow" else 1.25
+        self.pull_active = False
+        self.impact_active = False
+        self.shatter_lines = []
+        self.pixel_particles = []
+        for _ in range(42):
+            ang = random.uniform(0.0, math.tau)
+            dist = random.uniform(28.0, 165.0)
+            size = random.choice((4, 6, 8, 10))
+            col = random.choice(
+                ((255, 45, 70), (255, 255, 255), (60, 240, 255), (18, 10, 22))
+            )
+            self.pixel_particles.append([ang, dist, random.uniform(1.6, 4.0), size, col])
+
+        # Precompute screen-space shatter crack rays from center
+        for i in range(20):
+            ang = (i / 20.0) * math.tau + random.uniform(-0.12, 0.12)
+            self.shatter_lines.append((ang, random.uniform(160.0, 560.0), random.choice((2, 3, 4))))
+
+    def update(self, dt=1 / 60):
+        super().update(dt)
+        t = self.elapsed
+        if self.mode == "swallow":
+            if t < 1.60:
+                # Stage 1 (0.0s .. 1.6s): Slow spatial anomaly tear & pixel particle gathering
+                p = t / 1.60
+                self.scale = 0.12 + 0.78 * (1.0 - (1.0 - p) ** 2)
+                self.pull_active = False
+                self.impact_active = False
+            elif t < 3.40:
+                # Stage 2 (1.6s .. 3.4s): Cross-star expansion + gravity suction rings & centripetal speed lines
+                p = (t - 1.60) / 1.80
+                pulse = 0.12 * math.sin(t * 16.0)
+                self.scale = 0.90 + 2.65 * (p * p) + pulse
+                self.pull_active = True
+                self.impact_active = False
+            else:
+                # Stage 3 (3.4s .. 4.3s): Swallow climax + High-Contrast Impact Frames & Screen Shatter!
+                p = min(1.0, (t - 3.40) / max(0.01, self.duration - 3.40))
+                self.scale = 3.55 + 2.45 * p
+                self.pull_active = True
+                self.impact_active = True
+        else:
+            # Arrival mode in main_world.tmx: shrink cleanly after player drops out
+            p = min(1.0, t / max(0.01, self.duration))
+            self.scale = max(0.0, 1.35 * (1.0 - p * p))
+            self.pull_active = False
+            self.impact_active = False
+
+        # Animate orbiting/pulling pixel glitch squares
+        pull_speed = 115.0 if (self.mode == "swallow" and t >= 1.60) else (22.0 if self.mode == "swallow" else -48.0)
+        for part in self.pixel_particles:
+            part[0] += part[2] * dt
+            if self.mode == "swallow":
+                part[1] -= pull_speed * dt
+                if part[1] < 12.0:
+                    part[1] = random.uniform(105.0, 185.0)
+                elif part[1] > 190.0:
+                    part[1] = random.uniform(35.0, 95.0)
+            else:
+                part[1] += 48.0 * dt
+
+    def _star_points(self, cx, cy, outer_r, inner_r, jitter=0.0):
+        pts = []
+        for i in range(8):
+            ang = i * (math.pi * 0.25)
+            r = (outer_r if i % 2 == 0 else inner_r) + random.uniform(-jitter, jitter)
+            pts.append((int(round(cx + math.cos(ang) * r)), int(round(cy + math.sin(ang) * r))))
+        return pts
+
+    def draw(self, screen, camera_x=0, camera_y=0):
+        if self.scale <= 0.04:
+            return
+        sx = int(round(self.pos_x - camera_x))
+        sy = int(round(self.pos_y - camera_y))
+        base_r = 56.0 * self.scale
+        inner_r = 14.0 * self.scale
+
+        # 1. Gravity suction rings
+        for ring_i in range(3):
+            phase = ((self.elapsed * 2.1 + ring_i * 0.33) % 1.0)
+            r_ring = int(max(6, base_r * (1.65 - phase * 1.35)))
+            col = (255, 55, 80) if ring_i % 2 == 0 else (65, 240, 255)
+            pygame.draw.circle(screen, col, (sx, sy), r_ring, 2)
+
+        # 1b. Centripetal suction speed lines during Stage 2 expansion & pull
+        if self.pull_active and not self.impact_active:
+            for idx in range(14):
+                ang = (idx / 14.0) * math.tau + self.elapsed * 1.4
+                r_out = base_r * 1.85 + 24.0 * math.sin(self.elapsed * 12.0 + idx)
+                r_in = max(18.0, base_r * 0.85)
+                x1 = int(round(sx + math.cos(ang) * r_out))
+                y1 = int(round(sy + math.sin(ang) * r_out))
+                x2 = int(round(sx + math.cos(ang) * r_in))
+                y2 = int(round(sy + math.sin(ang) * r_in))
+                lcol = (255, 65, 90) if idx % 2 == 0 else (70, 240, 255)
+                pygame.draw.line(screen, lcol, (x1, y1), (x2, y2), 2)
+
+        # 2. Orbiting pixel glitch squares
+        for ang, dist, _, sz, col in self.pixel_particles:
+            px = int(round(sx + math.cos(ang) * dist * min(1.8, 0.55 + self.scale * 0.45)))
+            py = int(round(sy + math.sin(ang) * dist * min(1.8, 0.55 + self.scale * 0.45)))
+            pygame.draw.rect(screen, col, (px - sz // 2, py - sz // 2, sz, sz))
+
+        # 3. 4-Point Cross-Star Dimensional Rift (Smooth low-frequency breathing glow, zero strobe)
+        breath = 1.0 + 0.05 * math.sin(self.elapsed * 2.5 * math.tau)
+        jit = 1.2 * min(1.5, self.scale)
+        pts_cyan = self._star_points(sx, sy, base_r * 1.18 * breath, inner_r * 1.25 * breath, jitter=jit)
+        pts_red = self._star_points(sx, sy, base_r * 1.04 * breath, inner_r * 1.08 * breath, jitter=jit * 0.6)
+        pts_core = self._star_points(sx, sy, base_r * 0.76, inner_r * 0.72, jitter=0.0)
+
+        pygame.draw.polygon(screen, (45, 195, 225), pts_cyan)
+        pygame.draw.polygon(screen, (195, 28, 52), pts_red)
+        pygame.draw.polygon(screen, (10, 6, 14), pts_core)
+        pygame.draw.polygon(screen, (220, 170, 185), pts_core, 2)
+
+    def draw_screen_overlay(self, screen):
+        """
+        Smooth, eye-friendly crimson-to-black alpha fade with subtle fracture lines
+        (completely eliminates high-frequency red/black/white strobe flashing).
+        """
+        if not self.impact_active:
+            return
+        w, h = screen.get_width(), screen.get_height()
+        cx, cy = w // 2, h // 2
+        p = max(0.0, min(1.0, (self.elapsed - 3.40) / max(0.01, self.duration - 3.40)))
+        ease = p * p * (3.0 - 2.0 * p)  # Smoothstep easing
+
+        # Smooth transition from deep crimson veil -> pitch black (zero per-frame strobe)
+        r_col = int(round(95 * (1.0 - ease) + 8 * ease))
+        g_col = int(round(12 * (1.0 - ease) + 6 * ease))
+        b_col = int(round(24 * (1.0 - ease) + 12 * ease))
+        alpha = int(round(85 + 170 * ease))
+
+        overlay = pygame.Surface((w, h), pygame.SRCALPHA)
+        overlay.fill((r_col, g_col, b_col, max(0, min(255, alpha))))
+        screen.blit(overlay, (0, 0))
+
+        # Steady, smoothly fading dimensional fracture rays & central breathing cross-star
+        crack_alpha = int(round(190 * (1.0 - ease * 0.75)))
+        if crack_alpha > 12:
+            crack_surf = pygame.Surface((w, h), pygame.SRCALPHA)
+            for idx, (ang, length, thick) in enumerate(self.shatter_lines):
+                scaled_len = length * (0.55 + 0.55 * ease)
+                ex = int(cx + math.cos(ang) * scaled_len)
+                ey = int(cy + math.sin(ang) * scaled_len)
+                col = (210, 42, 68, crack_alpha) if idx % 2 == 0 else (65, 205, 230, crack_alpha)
+                pygame.draw.line(crack_surf, col, (cx, cy), (ex, ey), thick)
+            star_r = max(18.0, 210.0 * (1.0 - 0.65 * ease))
+            pts = self._star_points(cx, cy, star_r, star_r * 0.16, jitter=0.0)
+            pygame.draw.polygon(crack_surf, (215, 38, 64, crack_alpha), pts)
+            pygame.draw.polygon(
+                crack_surf,
+                (12, 8, 16, min(255, crack_alpha + 40)),
+                self._star_points(cx, cy, star_r * 0.55, star_r * 0.09, jitter=0.0),
+            )
+            screen.blit(crack_surf, (0, 0))
+
+
+
 
 
 

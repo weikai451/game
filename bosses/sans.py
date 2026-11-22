@@ -50,9 +50,10 @@ class Sans(BaseBoss):
             "Dodge": (0.0, 0.0),
         }
 
-        # Undertale Sans 10-Dodge Stamina System & Afterimages
-        self.max_stamina = 10
-        self.stamina = 10
+        # Undertale Sans 30-Dodge Stamina System & Afterimages
+        # (< 20 triggers Teleport Bone Assault phase; <= 15 triggers 360° Gaster Blaster Ultimate!)
+        self.max_stamina = 30
+        self.stamina = 30
         self.dodge_timer = 0.0
         self.dodge_vel_x = 0.0
         self.dodge_afterimages = []
@@ -61,17 +62,30 @@ class Sans(BaseBoss):
         self._last_map_width = 1664
         self._wave_cycle = 0
         self._blaster_pattern_cycle = 0
-        self.cooldown_scale = 0.85  # 15% shorter attack intervals (0.72 in Phase 2!)
+        self.cooldown_scale = 0.85  # 15% shorter attack intervals (0.78 at <20, 0.70 at <=15!)
         self.phase = 1
+        self.teleport_phase_unlocked = False
         self.phase2_triggered = False
+        self.screen_blackout_timer = 0.0
+        self._chain_tp_total = 4
+        self._chain_tp_done = 0
+        self._chain_tp_timer = 0.0
+        self._chain_tp_interval = 0.85
+        self._chain_tp_hover = False
         self.title_card_active = False
         self.title_card_timer = 0.0
         self.skill_cooldowns[BossState.ATTACK_4] = 2.0
         self.skill_cooldowns[BossState.ATTACK_5] = 3.2
+        self.skill_cooldowns[BossState.ATTACK_6] = 0.0
         self.skill_cooldowns[BossState.SANS_ULTIMATE] = 0.0
         self.intro_duration = 4.0  # 2.0s zoom-in cutscene + 2.0s smooth pixel Title Card
         self.intro_progress = 0.0
+        self.waiting_for_dialogue = False
         self.state = BossState.INTRO
+        # Explicit arena horizontal bounds (prevent Telekinesis Slam / Dodge leaving Boss Arena!)
+        default_w = float(getattr(game_map, "width", 1664)) if game_map is not None else 1664.0
+        self.arena_left_x = 120.0
+        self.arena_right_x = max(320.0, default_w - 120.0)
 
         self.animator.load_animation("idle", "assets/sprites/sans/sans_idle.png", 4, 1.0)
         self.animator.load_animation("Run", "assets/sprites/sans/sans_move.png", 4, 1.0)
@@ -96,11 +110,37 @@ class Sans(BaseBoss):
             BossState.ATTACK_3,
             BossState.ATTACK_4,
             BossState.ATTACK_5,
+            BossState.ATTACK_6,
             BossState.SANS_ULTIMATE,
         ):
             self.face_target()
             self.attack_phase = AttackPhase.WINDUP
             self.animator.play("Cast", force_reset=True)
+            if new_state == BossState.ATTACK_6:
+                self._chain_tp_total = random.choice((3, 4))
+                self._chain_tp_done = 0
+                self._chain_tp_timer = 0.0
+                self._chain_tp_interval = random.uniform(0.775, 0.925)
+                self._chain_tp_hover = False
+            # Phase 2 Dual-Skill Combo (60% chance, max 2 concurrent skills; Ultimate & Chain Teleport stay solo!)
+            if (
+                self.phase >= 2
+                and new_state not in (BossState.SANS_ULTIMATE, BossState.ATTACK_6)
+                and self.pending_secondary_skill is None
+                and random.random() < 0.60
+            ):
+                pair_map = {
+                    BossState.ATTACK_1: ("bone_barrage", "blaster_pair"),
+                    BossState.ATTACK_2: ("bone_wave",),
+                    BossState.ATTACK_3: ("bone_wave",),
+                    BossState.ATTACK_4: ("x_blasters",),
+                    BossState.ATTACK_5: ("bone_wave",),
+                }
+                choices = pair_map.get(new_state)
+                if choices:
+                    self.schedule_secondary_skill(
+                        random.choice(choices), delay=random.uniform(0.22, 0.36)
+                    )
         elif new_state == BossState.PHASE_2_TRANSITION:
             self.attack_phase = AttackPhase.NONE
             self.invincible = True
@@ -122,12 +162,20 @@ class Sans(BaseBoss):
                 self.animator.play("Run")
 
     def decide_next_action(self, distance):
-        # Phase 2 Ultimate: 360-Degree Gaster Blaster Ring when off cooldown
+        # Tier 2 Ultimate (<= 1/2 stamina): 360-Degree Gaster Blaster Ring when off cooldown
         if (
-            self.phase >= 2
+            self.phase2_triggered
             and self.skill_cooldowns.get(BossState.SANS_ULTIMATE, 0.0) <= 0.0
         ):
             self.change_state(BossState.SANS_ULTIMATE)
+            return
+
+        # Tier 1 Signature (< 2/3 stamina): Rapid Chain Teleportation & Bone Assault
+        if (
+            self.teleport_phase_unlocked
+            and self.skill_cooldowns.get(BossState.ATTACK_6, 0.0) <= 0.0
+        ):
+            self.change_state(BossState.ATTACK_6)
             return
 
         vertical_diff = (
@@ -358,21 +406,34 @@ class Sans(BaseBoss):
 
     def _pick_safe_telekinesis_landing(self, map_width):
         """
-        Choose a guaranteed-safe landing coordinate (land_x, land_y) on either a
-        One-Way Platform or a clear segment of the solid arena floor.
+        Choose a guaranteed-safe landing coordinate (land_x, land_y) strictly INSIDE
+        the Boss Arena bounds ([arena_left_x, arena_right_x]) on either a Judgement Hall
+        One-Way Platform or a clear segment of the arena floor.
         """
+        left_bound = float(getattr(self, "arena_left_x", 120.0))
+        right_bound = min(float(map_width) - 80.0, float(getattr(self, "arena_right_x", map_width - 120.0)))
+        if right_bound - left_bound < 240.0:
+            left_bound = max(120.0, self.pos_x - 360.0)
+            right_bound = min(float(map_width) - 120.0, self.pos_x + 360.0)
+
         candidates = []
         if self.game_map is not None:
             for plat in getattr(self.game_map, "platforms", ()):
-                if plat.width >= 160:
+                if (
+                    plat.width >= 160
+                    and plat.left >= left_bound + 40.0
+                    and plat.right <= right_bound - 40.0
+                ):
                     candidates.append((float(plat.centerx), float(plat.top)))
 
         floor_y = float(self.ground_y)
-        min_x = 260.0
-        max_x = max(min_x + 100.0, float(map_width) - 260.0)
+        min_x = left_bound + 120.0
+        max_x = max(min_x + 80.0, right_bound - 120.0)
         candidates.append((random.uniform(min_x, max_x), floor_y))
         candidates.append((random.uniform(min_x, max_x), floor_y))
-        return random.choice(candidates)
+        land_x, land_y = random.choice(candidates)
+        land_x = max(left_bound + 80.0, min(right_bound - 80.0, land_x))
+        return (land_x, land_y)
 
     def _update_attack_4_telekinesis_slam(self, active_hitboxes, vfx_group, map_width):
         """
@@ -490,11 +551,187 @@ class Sans(BaseBoss):
             self.skill_cooldowns[BossState.ATTACK_5] = 4.8 * self.cooldown_scale
             self.change_state(BossState.COOLDOWN, cooldown_duration=0.75)
 
+    def _trigger_teleport_phase(self, vfx_group=None):
+        """
+        Tier 1 Awakening when Stamina drops below 2/3 (< 20 out of 30):
+        Intensifies cyan-gold eye flame, unlocks Dual-Skill Combos & Rapid Teleportation Bone Assault!
+        """
+        self.teleport_phase_unlocked = True
+        self.phase = max(self.phase, 2)
+        self.cooldown_scale = min(self.cooldown_scale, 0.78)
+        self.screen_blackout_timer = max(self.screen_blackout_timer, 0.07)
+        self.pending_screen_shake = max(self.pending_screen_shake, 0.30)
+        get_audio().play_sfx("blaster_charge")
+        if vfx_group is not None:
+            vfx_group.add(
+                FloatingTextVFX(
+                    self.pos_x,
+                    self.hurtbox.top - 22,
+                    text="READY FOR THIS?",
+                    color=(85, 240, 255),
+                    outline_color=(10, 15, 35),
+                    font_size=24,
+                    duration=1.0,
+                    rise_speed=44.0,
+                )
+            )
+        self.change_state(BossState.ATTACK_6)
+
+    def _pick_tactical_teleport_spot(self, step_idx, map_width):
+        """Pick an in-arena tactical teleport position (behind player, platform, or mid-air)."""
+        left_b = float(getattr(self, "arena_left_x", 120.0)) + 90.0
+        right_b = min(float(map_width) - 90.0, float(getattr(self, "arena_right_x", map_width - 120.0)) - 90.0)
+        if right_b <= left_b + 80.0:
+            left_b, right_b = 140.0, max(260.0, float(map_width) - 140.0)
+
+        px = self.target.pos_x if (self.target and self.target.alive()) else (left_b + right_b) * 0.5
+        floor_y = float(self.ground_y)
+
+        # Alternate: 0 -> behind player on ground, 1 -> elevated arena platform, 2 -> mid-air hover, 3 -> opposite flank
+        mode = step_idx % 4
+        if mode == 1 and self.game_map is not None:
+            valid_plats = [
+                p for p in getattr(self.game_map, "platforms", ())
+                if p.width >= 140 and p.left >= left_b - 20.0 and p.right <= right_b + 20.0
+            ]
+            if valid_plats:
+                plat = random.choice(valid_plats)
+                return (float(plat.centerx), float(plat.top), False)
+
+        if mode == 2:
+            side = -1 if px > (left_b + right_b) * 0.5 else 1
+            tx = max(left_b, min(right_b, px + side * random.uniform(210.0, 310.0)))
+            return (tx, max(220.0, floor_y - 145.0), True)
+
+        if mode == 0:
+            p_face = 1 if getattr(self.target, "facing_right", True) else -1
+            tx = px - p_face * random.uniform(170.0, 250.0)
+            if tx < left_b or tx > right_b:
+                tx = px + p_face * random.uniform(190.0, 270.0)
+            return (max(left_b, min(right_b, tx)), floor_y, False)
+
+        side = 1 if self.pos_x < px else -1
+        tx = max(left_b, min(right_b, px + side * random.uniform(220.0, 320.0)))
+        return (tx, floor_y, False)
+
+    def _update_attack_6_chain_teleport_bones(self, dt, active_hitboxes, vfx_group, map_width):
+        """
+        Attack 6 — Rapid Teleportation & Bone Assault (連續傳送骨陣突襲):
+        Executes 3~4 rapid blinks (0.62~0.74s apart) with brief 0.07s Undertale blackout cuts
+        and synchronized high-density Bone Barrage / Blue-White Bone Wave / Ground Bone Wall!
+        """
+        if self._chain_tp_done < self._chain_tp_total:
+            self.attack_phase = AttackPhase.ACTIVE
+            self._chain_tp_timer -= dt
+            if self._chain_tp_timer <= 0.0:
+                step = self._chain_tp_done
+                self._chain_tp_done += 1
+                self._chain_tp_timer = self._chain_tp_interval
+
+                # Leave cyan ghost at old spot & fire 0.07s Undertale-style instant black-frame cut!
+                self._spawn_dodge_afterimage(alpha=205.0)
+                self.screen_blackout_timer = 0.07
+                self.pending_screen_shake = max(self.pending_screen_shake, 0.12)
+                get_audio().play_sfx("sans_dodge")
+                get_audio().play_sfx("vergil_teleport")
+
+                nx, ny, hover = self._pick_tactical_teleport_spot(step, map_width)
+                self.pos_x = nx
+                self.pos_y = ny
+                self.velocity_y = 0.0
+                self._chain_tp_hover = hover
+                self.face_target()
+                self.sync_boxes()
+                self.animator.play("Cast", force_reset=True)
+
+                tx = float(self.target.hurtbox.centerx) if (self.target and self.target.alive()) else self.pos_x + self.facing_dir * 200.0
+                ty = float(self.target.hurtbox.centery) if (self.target and self.target.alive()) else self.pos_y - 40.0
+                f_dir = self.facing_dir
+
+                # Synchronized high-density bone assault per blink
+                pattern = step % 3
+                if pattern == 0:
+                    # 4-bone mixed cyan/white homing fan
+                    offsets = [(-f_dir * 32, -108), (f_dir * 16, -124), (f_dir * 54, -84), (-f_dir * 12, -62)]
+                    for idx, (ox, oy) in enumerate(offsets):
+                        vfx = HomingBoneVFX(
+                            x=self.pos_x + ox,
+                            y=self.pos_y + oy,
+                            target_x=tx,
+                            target_y=ty,
+                            windup=0.22 + idx * 0.09,
+                            speed=610.0,
+                            duration=1.25,
+                            cyan=(idx % 2 == 1),
+                            damage=1,
+                            hitbox_list=active_hitboxes,
+                        )
+                        self.register_vfx(vfx, vfx_group)
+                elif pattern == 1:
+                    # Mixed Blue + White bone wave pincer across arena floor
+                    get_audio().play_sfx("bone_shoot")
+                    floor_y = float(self.ground_y)
+                    for i, bh in enumerate((58, 78, 92, 76, 60)):
+                        bx = self.pos_x + f_dir * (38.0 + i * 28.0)
+                        vfx = BoneWaveVFX(
+                            x=bx,
+                            ground_y=floor_y,
+                            height=bh,
+                            direction=f_dir,
+                            speed=275.0,
+                            delay=i * 0.045,
+                            duration=0.80,
+                            cyan=(i % 2 == 1),
+                            damage=1,
+                            hitbox_list=active_hitboxes,
+                        )
+                        self.register_vfx(vfx, vfx_group)
+                else:
+                    # Vertical Ground Bone Wall erupting at player's feet + 2 aimed follow-up bones
+                    get_audio().play_sfx("bone_shoot")
+                    trap = GroundBoneTrapVFX(
+                        center_x=tx,
+                        ground_y=float(self.ground_y),
+                        width=148,
+                        bone_height=96,
+                        warning_time=0.40,
+                        active_time=0.42,
+                        retract_time=0.18,
+                        damage=1,
+                        blue=False,
+                        hitbox_list=active_hitboxes,
+                    )
+                    self.register_vfx(trap, vfx_group)
+                    for idx, (ox, oy) in enumerate(((f_dir * 40, -110), (-f_dir * 24, -85))):
+                        vfx = HomingBoneVFX(
+                            x=self.pos_x + ox,
+                            y=self.pos_y + oy,
+                            target_x=tx,
+                            target_y=ty,
+                            windup=0.26 + idx * 0.12,
+                            speed=590.0,
+                            duration=1.20,
+                            cyan=(idx == 0),
+                            damage=1,
+                            hitbox_list=active_hitboxes,
+                        )
+                        self.register_vfx(vfx, vfx_group)
+        else:
+            self._chain_tp_timer -= dt
+            self.attack_phase = AttackPhase.RECOVERY
+            if self._chain_tp_timer <= 0.15:
+                self._chain_tp_hover = False
+            if self._chain_tp_timer <= 0.0:
+                self._chain_tp_hover = False
+                self.skill_cooldowns[BossState.ATTACK_6] = 6.5 * self.cooldown_scale
+                self.change_state(BossState.COOLDOWN, cooldown_duration=0.65)
+
     def _trigger_phase_2(self, vfx_group=None):
-        """Trigger Sans Phase 2 Awakening when Stamina drops to/below 50% (<= 5)."""
-        self.phase = 2
+        """Trigger Sans Phase 3 Final Awakening when Stamina drops to/below 1/3 (<= 10 out of 30)."""
+        self.phase = 3
+        self.teleport_phase_unlocked = True
         self.phase2_triggered = True
-        self.cooldown_scale = 0.72
+        self.cooldown_scale = 0.68
         self.clear_owned_attacks()
         self.change_state(BossState.PHASE_2_TRANSITION)
         self.pending_screen_shake = max(self.pending_screen_shake, 0.45)
@@ -652,32 +889,44 @@ class Sans(BaseBoss):
     def reset(self):
         self.stamina = self.max_stamina
         self.phase = 1
+        self.teleport_phase_unlocked = False
         self.phase2_triggered = False
+        self.screen_blackout_timer = 0.0
+        self._chain_tp_hover = False
         self.cooldown_scale = 0.85
         self.title_card_active = False
         self.dodge_timer = 0.0
         self.dodge_vel_x = 0.0
         self.dodge_afterimages.clear()
         super().reset()
+        self.skill_cooldowns[BossState.ATTACK_6] = 0.0
         self.skill_cooldowns[BossState.SANS_ULTIMATE] = 0.0
 
     def draw_extras(self, surface, camera_x=0, camera_y=0):
-        """Render translucent cyan dodge afterimages + persistent Phase 2 cyan/gold eye flame."""
+        """Render translucent cyan dodge afterimages + intensified cyan/gold eye flame (<20 stamina)."""
         for ghost, rect, alpha in self.dodge_afterimages:
             if alpha > 8:
                 img = ghost.copy()
                 img.set_alpha(int(alpha))
                 surface.blit(img, rect.move(-camera_x, -camera_y))
 
-        if self.phase >= 2 and self.alive():
+        if (self.teleport_phase_unlocked or self.phase >= 2) and self.alive():
             t = pygame.time.get_ticks() * 0.001
             ex = int(round(self.pos_x + self.facing_dir * 6.0 - camera_x))
             ey = int(round(self.pos_y - 74.0 - camera_y))
-            col = (55, 235, 255) if int(t * 16.0) % 2 == 0 else (255, 225, 55)
-            flame_h = int(12 + 6 * abs(math.sin(t * 22.0)))
-            pygame.draw.circle(surface, col, (ex, ey), 5)
-            pygame.draw.line(surface, col, (ex, ey), (ex - self.facing_dir * 8, ey - flame_h), 3)
-            pygame.draw.circle(surface, (245, 255, 255), (ex, ey), 2)
+            intense = self.phase2_triggered
+            col = (55, 235, 255) if int(t * 18.0) % 2 == 0 else (255, 225, 55)
+            outer_col = (255, 215, 65) if col[0] < 100 else (45, 225, 255)
+            flame_h = int((18 if intense else 14) + 8 * abs(math.sin(t * 24.0)))
+            # Multi-layered blazing cyan/gold eye trail
+            pygame.draw.circle(surface, outer_col, (ex, ey), 7 if intense else 6)
+            pygame.draw.line(
+                surface, outer_col, (ex, ey), (ex - self.facing_dir * 13, ey - flame_h - 4), 4
+            )
+            pygame.draw.line(
+                surface, col, (ex, ey), (ex - self.facing_dir * 9, ey - flame_h), 3
+            )
+            pygame.draw.circle(surface, (250, 255, 255), (ex, ey), 3)
 
     def on_parried(self):
         super().on_parried()
@@ -685,10 +934,132 @@ class Sans(BaseBoss):
             self.attack_phase = AttackPhase.RECOVERY
             self.state_timer = max(self.state_timer, 0.95)
 
+    def _execute_secondary_skill(self, skill_id, active_hitboxes, vfx_group, map_width):
+        """Phase 2 concurrent secondary skill launcher (runs alongside primary attack)."""
+        if not self.alive() or self.state in (BossState.INTRO, BossState.PHASE_2_TRANSITION):
+            return
+        tx = (
+            float(self.target.hurtbox.centerx)
+            if (self.target and self.target.alive())
+            else self.pos_x + self.facing_dir * 200.0
+        )
+        ty = (
+            float(self.target.hurtbox.centery)
+            if (self.target and self.target.alive())
+            else self.pos_y - 40.0
+        )
+        f_dir = self.facing_dir
+
+        if skill_id == "bone_wave":
+            self._wave_cycle += 1
+            is_blue = (self._wave_cycle % 2 == 0)
+            get_audio().play_sfx("bone_shoot")
+            for i, bh in enumerate((56, 74, 88, 72, 56)):
+                bx = self.pos_x + f_dir * (40.0 + i * 30.0)
+                vfx = BoneWaveVFX(
+                    x=bx,
+                    ground_y=self.pos_y,
+                    height=bh,
+                    direction=f_dir,
+                    speed=255.0,
+                    delay=i * 0.055,
+                    duration=0.78,
+                    cyan=is_blue,
+                    damage=1,
+                    hitbox_list=active_hitboxes,
+                )
+                self.register_vfx(vfx, vfx_group)
+
+        elif skill_id == "bone_barrage":
+            offsets = [(-f_dir * 34, -108), (f_dir * 16, -126), (f_dir * 52, -92)]
+            for idx, (ox, oy) in enumerate(offsets):
+                vfx = HomingBoneVFX(
+                    x=self.pos_x + ox,
+                    y=self.pos_y + oy,
+                    target_x=tx,
+                    target_y=ty,
+                    windup=0.34 + idx * 0.14,
+                    speed=590.0,
+                    duration=1.30,
+                    cyan=(idx == 1),
+                    damage=1,
+                    hitbox_list=active_hitboxes,
+                )
+                self.register_vfx(vfx, vfx_group)
+
+        elif skill_id == "blaster_pair":
+            for ox, oy, wu in ((f_dir * 72.0, -34.0, 0.62), (-f_dir * 150.0, -165.0, 0.88)):
+                b = GasterBlasterVFX(
+                    x=tx + ox,
+                    y=ty + oy,
+                    target_x=tx,
+                    target_y=ty,
+                    windup=wu,
+                    active_time=0.42,
+                    recovery_time=0.22,
+                    beam_length=600.0,
+                    beam_width=36,
+                    damage=1,
+                    hitbox_list=active_hitboxes,
+                )
+                self.register_vfx(b, vfx_group)
+
+        elif skill_id == "x_blasters":
+            radius = 275.0
+            for deg in (45, 135, 225, 315):
+                rad = math.radians(deg)
+                b = GasterBlasterVFX(
+                    x=tx + math.cos(rad) * radius,
+                    y=ty + math.sin(rad) * radius,
+                    target_x=tx,
+                    target_y=ty,
+                    windup=0.74,
+                    active_time=0.42,
+                    recovery_time=0.22,
+                    beam_length=580.0,
+                    beam_width=34,
+                    damage=1,
+                    hitbox_list=active_hitboxes,
+                )
+                self.register_vfx(b, vfx_group)
+
+    def can_talk(self, player):
+        """True when Sans is peacefully waiting and Player is close enough to press [E] Talk."""
+        if not self.waiting_for_dialogue or not self.alive() or player is None or not player.alive():
+            return False
+        dx = abs(player.pos_x - self.pos_x)
+        dy = abs(player.pos_y - self.pos_y)
+        return dx <= 115.0 and dy <= 120.0
+
+    def start_pre_battle_wait(self):
+        """Hold Sans calmly in IDLE facing the player while waiting for [E] Talk or Pre-Boss Dialogue."""
+        self.waiting_for_dialogue = True
+        self.intro_progress = 0.0
+        self.title_card_active = False
+        self.state = BossState.IDLE
+        self.state_timer = 0.0
+        self.animator.play("idle", force_reset=True)
+
+    def begin_intro_cutscene(self):
+        """Immediately launch Sans's 1.40x Intro Cutscene -> Pixel Title Card -> Battle!"""
+        self.waiting_for_dialogue = False
+        self.change_state(BossState.INTRO)
+
     def update(self, dt=1 / 60, active_hitboxes=None, vfx_group=None, map_width=1600):
         self._last_vfx_group = vfx_group
         self._last_map_width = map_width
         self._tick_common_timers(dt)
+        if self.waiting_for_dialogue:
+            self.face_target()
+            self.apply_physics_and_collisions(dt, self.pos_x, map_width)
+            self.image = self.animator.update_get_image(
+                self.animation_speed.get("idle", 0.09), dt_scale=dt * 60.0
+            )
+            if self.flip:
+                self.image = pygame.transform.flip(self.image, True, False).convert_alpha()
+            self.sync_boxes()
+            return
+        self.tick_secondary_skill(dt, active_hitboxes, vfx_group, map_width)
 
         # Fade out dodge afterimages
         self.dodge_afterimages = [
@@ -697,12 +1068,24 @@ class Sans(BaseBoss):
             if a - 460.0 * dt > 10.0
         ]
 
-        # Trigger Phase 2 awakening once dodge stamina drops to/below 50% (<= 5)
+        if self.screen_blackout_timer > 0.0:
+            self.screen_blackout_timer = max(0.0, self.screen_blackout_timer - dt)
+
+        # Tier 2 (Phase 2): Stamina <= 2/3 (<= 20 out of 30) -> Rapid Teleport Bone Assault & Dual-Skills!
         if (
-            not self.phase2_triggered
+            not self.teleport_phase_unlocked
             and self.state != BossState.INTRO
             and self.hp > 0.0
-            and self.stamina <= self.max_stamina * 0.5
+            and self.stamina <= 20
+        ):
+            self._trigger_teleport_phase(vfx_group=vfx_group)
+
+        # Tier 3 (Phase 3 Final): Stamina <= 1/3 (<= 10 out of 30) -> 360° Gaster Blaster Ultimate!
+        if (
+            not self.phase2_triggered
+            and self.state not in (BossState.INTRO, BossState.ATTACK_6)
+            and self.hp > 0.0
+            and self.stamina <= (self.max_stamina / 3.0)
         ):
             self._trigger_phase_2(vfx_group=vfx_group)
 
@@ -753,7 +1136,9 @@ class Sans(BaseBoss):
         elif self.dodge_timer > 0.0:
             self.dodge_timer = max(0.0, self.dodge_timer - dt)
             self.pos_x += self.dodge_vel_x * dt
-            self.pos_x = max(120.0, min(float(map_width - 120), self.pos_x))
+            min_bx = max(120.0, float(getattr(self, "arena_left_x", 120.0)) + 40.0)
+            max_bx = min(float(map_width - 120), float(getattr(self, "arena_right_x", map_width - 120)) - 40.0)
+            self.pos_x = max(min_bx, min(max_bx, self.pos_x))
             self.dodge_vel_x *= max(0.0, 1.0 - 7.0 * dt)
             self._afterimage_timer += dt
             if self._afterimage_timer >= 0.08:
@@ -779,7 +1164,9 @@ class Sans(BaseBoss):
             self.face_target()
             move_dir = -1 if self.pos_x > player_x else 1
             self.pos_x += move_dir * self.boss_speed * dt
-            self.pos_x = max(40.0, min(float(map_width - 40), self.pos_x))
+            min_bx = max(40.0, float(getattr(self, "arena_left_x", 40.0)) + 40.0)
+            max_bx = min(float(map_width - 40), float(getattr(self, "arena_right_x", map_width - 40)) - 40.0)
+            self.pos_x = max(min_bx, min(max_bx, self.pos_x))
             self.update_vertical_chase_ai(distance, move_dir)
             self.decide_next_action(distance)
 
@@ -800,8 +1187,17 @@ class Sans(BaseBoss):
         elif self.state == BossState.ATTACK_5:
             self._update_attack_5_blaster_formation(active_hitboxes, vfx_group)
 
+        elif self.state == BossState.ATTACK_6:
+            self._update_attack_6_chain_teleport_bones(
+                dt, active_hitboxes, vfx_group, map_width
+            )
+
         # Unconditional gravity, map collisions, One-Way Platforms & obstacle vaulting
-        self.apply_physics_and_collisions(dt, old_pos_x, map_width)
+        # (Suspend downward gravity while hovering mid-air during Chain Teleport Assault)
+        if self.state == BossState.ATTACK_6 and self._chain_tp_hover:
+            self.velocity_y = 0.0
+        else:
+            self.apply_physics_and_collisions(dt, old_pos_x, map_width)
 
         # Animation frame update
         anim_state = self.animator.current_state or "idle"
