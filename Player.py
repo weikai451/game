@@ -567,7 +567,8 @@ class Player(pygame.sprite.Sprite):
                 if is_buffed
                 else self.active_attack_multiplier
             )
-            final_damage = round(self.base_attack_damage * mult, 2)
+            debug_mult = 3.0 if self.god_mode else 1.0
+            final_damage = round(self.base_attack_damage * mult * debug_mult, 2)
 
             if self.is_down_slashing:
                 down_offset_y = 20.0
@@ -996,10 +997,11 @@ class Player(pygame.sprite.Sprite):
             return
 
         # 2. Continuous input checks (Unified: Right Click only for Block/Parry!)
+        # Allow quick Right-Click tap to finish its full PARRY_WINDOW before auto-releasing block!
         keys = pygame.key.get_pressed()
         mouse_buttons = pygame.mouse.get_pressed()
         holding_block = bool(mouse_buttons[2])
-        if not holding_block and self.is_blocking:
+        if not holding_block and self.is_blocking and self.parry_timer <= 0.0:
             self.stop_block()
 
         # 3. Horizontal movement, Q-Key Dash & gravity

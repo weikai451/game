@@ -27,7 +27,7 @@ from transition_system import (
     change_map,
 )
 from checkpoint import load_checkpoints, Checkpoint
-from menu import Menu
+from menu import Menu, MainMenu
 from tutorial_system import GuidedTutorialManager
 from dialogue_system import DialogueBox
 import Player
@@ -63,7 +63,7 @@ class Game:
         self.screen = pygame.display.set_mode(
             (WIDTH, HEIGHT), pygame.RESIZABLE | pygame.SCALED
         )
-        pygame.display.set_caption("Final Project - Hollow Action")
+        pygame.display.set_caption("INDIE CROSS")
         self._disable_windows_ime()
         self.clock = pygame.time.Clock()
         self.running = True
@@ -129,8 +129,22 @@ class Game:
             thickness = random.choice([2, 2, 3, 4])
             self.speed_line_specs.append((ang, inner_ratio, thickness))
 
-        # Main Menu & Pause Menu (100% English Pixel UI + Categorized Volume Sliders)
-        self.main_menu = Menu("HOLLOW ACTION", ["START", "QUIT"])
+        # INDIE CROSS Dimensional Rift Main Menu, Shared Settings Panel & Pause Menu
+        self.main_menu = MainMenu()
+        self.settings_menu = Menu(
+            "SETTINGS",
+            ["BACK"],
+            fill_background=False,
+            sliders=[
+                {"key": "master", "label": "MASTER VOLUME"},
+                {"key": "bgm", "label": "BGM / MUSIC"},
+                {"key": "sfx", "label": "SFX / COMBAT"},
+            ],
+        )
+        self.in_menu_settings = False
+        self.menu_fade_active = False
+        self.menu_fade_alpha = 0.0
+        self.menu_fade_action = None
         self.pause_menu = Menu(
             "PAUSED",
             ["BACK TO GAME", "RESTART", "MAIN MENU", "QUIT"],
@@ -1052,6 +1066,40 @@ class Game:
     # ------------------------------------------------------------------
     # Main Loop: Events, Combat Collisions, Update, Draw
     # ------------------------------------------------------------------
+    def has_saved_checkpoint(self):
+        """True when the player has an active Checkpoint save available for CONTINUE."""
+        return self.active_checkpoint is not None
+
+    def _start_menu_fade(self, action):
+        """Begin smooth 0.42s fade-to-black from Main Menu / Tutorial Prompt into gameplay."""
+        if self.menu_fade_active:
+            return
+        self.menu_fade_active = True
+        self.menu_fade_alpha = 0.0
+        self.menu_fade_action = action
+
+    def _execute_menu_fade_action(self):
+        action = self.menu_fade_action
+        self.menu_fade_active = False
+        self.menu_fade_alpha = 0.0
+        self.menu_fade_action = None
+        self.in_menu_settings = False
+        if action == "NEW_TUTORIAL":
+            self.new_game(map_path=TUTORIAL_PATH, is_tutorial=True)
+            self.state = State.PLAYING
+        elif action == "NEW_WORLD":
+            self.new_game(map_path=MAIN_WORLD_PATH, is_tutorial=False)
+            self.state = State.PLAYING
+        elif action == "CONTINUE":
+            target_map, spawn_pos = self.get_respawn_target()
+            self.new_game(
+                map_path=target_map,
+                is_tutorial=("tutorial" in os.path.basename(target_map).lower()),
+                spawn_pos=spawn_pos,
+                keep_progress=True,
+            )
+            self.state = State.PLAYING
+
     def handle_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -1059,14 +1107,31 @@ class Game:
             elif event.type == getattr(pygame, "WINDOWFOCUSGAINED", -1):
                 self._disable_windows_ime()
 
-            # ---------- 1. Main Menu ----------
+            if self.menu_fade_active:
+                continue
+
+            # ---------- 1. INDIE CROSS Main Menu ----------
             if self.state == State.MENU:
-                choice = self.main_menu.handle_event(event)
-                if choice == "START":
-                    self.state = State.TUTORIAL_PROMPT
-                    self.prompt_selection = 0
-                elif choice == "QUIT":
-                    self.running = False
+                if self.in_menu_settings:
+                    if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                        self.in_menu_settings = False
+                    else:
+                        s_choice = self.settings_menu.handle_event(event)
+                        if s_choice == "BACK":
+                            self.in_menu_settings = False
+                else:
+                    choice = self.main_menu.handle_event(
+                        event, has_save=self.has_saved_checkpoint()
+                    )
+                    if choice == "START GAME":
+                        self._start_menu_fade("NEW_TUTORIAL")
+                    elif choice == "CONTINUE" and self.has_saved_checkpoint():
+                        self._start_menu_fade("CONTINUE")
+                    elif choice == "SETTINGS":
+                        self.in_menu_settings = True
+                        self.settings_menu.selected = 0
+                    elif choice == "QUIT":
+                        self.running = False
 
             # ---------- 2. Guided Tutorial Prompt ----------
             elif self.state == State.TUTORIAL_PROMPT:
@@ -1086,11 +1151,9 @@ class Game:
                     ):
                         self.prompt_selection = 1
                     elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                        if self.prompt_selection == 0:
-                            self.new_game(map_path=TUTORIAL_PATH, is_tutorial=True)
-                        else:
-                            self.new_game(map_path=MAIN_WORLD_PATH, is_tutorial=False)
-                        self.state = State.PLAYING
+                        self._start_menu_fade(
+                            "NEW_TUTORIAL" if self.prompt_selection == 0 else "NEW_WORLD"
+                        )
                     elif event.key == pygame.K_ESCAPE:
                         self.state = State.MENU
 
@@ -1110,13 +1173,11 @@ class Game:
                     if self.prompt_buttons.get("YES") and self.prompt_buttons[
                         "YES"
                     ].collidepoint(pos):
-                        self.new_game(map_path=TUTORIAL_PATH, is_tutorial=True)
-                        self.state = State.PLAYING
+                        self._start_menu_fade("NEW_TUTORIAL")
                     elif self.prompt_buttons.get("NO") and self.prompt_buttons[
                         "NO"
                     ].collidepoint(pos):
-                        self.new_game(map_path=MAIN_WORLD_PATH, is_tutorial=False)
-                        self.state = State.PLAYING
+                        self._start_menu_fade("NEW_WORLD")
 
             # ---------- 3. Pause Menu ----------
             elif self.state == State.PAUSED:
@@ -1308,6 +1369,15 @@ class Game:
                     if not is_sans_attack or outcome in ("parry", "block"):
                         hb.register_hit(self.player)
 
+                    # Tutorial Parry Turret bolts cleanly destroy on hit, block, or perfect parry!
+                    if (
+                        getattr(hb, "tag", "") == "tutorial_bolt"
+                        and outcome in ("hit", "block", "parry")
+                    ):
+                        vfx_owner = getattr(hb, "vfx_owner", None)
+                        if vfx_owner is not None:
+                            vfx_owner.destroy()
+
                     if outcome == "parry":
                         focus_x = (
                             self.player.parry_box.centerx * 0.65
@@ -1491,6 +1561,14 @@ class Game:
 
         if was_transitioning and not self.transition.is_transitioning:
             self.player.is_teleporting = False
+
+        if self.state in (State.MENU, State.TUTORIAL_PROMPT):
+            self.main_menu.update(raw_dt)
+            if self.menu_fade_active:
+                self.menu_fade_alpha = min(255.0, self.menu_fade_alpha + (255.0 / 0.42) * raw_dt)
+                if self.menu_fade_alpha >= 255.0:
+                    self._execute_menu_fade_action()
+            return
 
         if self.state != State.PLAYING:
             return
@@ -1689,23 +1767,22 @@ class Game:
 
     def draw(self):
         if self.state == State.MENU:
-            self.main_menu.draw(self.screen)
-            self.hud.draw_text(
-                self.screen,
-                "A/D: Move | SPACE: Jump | Q: Dash | [Left Click] Attack | Air S+[Left Click] Pogo | [Right Click] Parry | R: Flask | E: Interact | F1: Debug",
-                self.hud.font_hud,
-                (160, 190, 230),
-                (WIDTH // 2, 650),
-            )
+            if self.in_menu_settings:
+                self.main_menu.draw_void_background(self.screen)
+                self.settings_menu.draw(self.screen)
+            else:
+                self.main_menu.draw(
+                    self.screen, has_save=self.has_saved_checkpoint()
+                )
 
         elif self.state == State.TUTORIAL_PROMPT:
-            self.screen.fill((20, 20, 50))
+            self.main_menu.draw_void_background(self.screen)
             self.hud.draw_text(
                 self.screen,
-                "HOLLOW ACTION",
+                "INDIE CROSS",
                 self.hud.font_big,
-                (80, 80, 120),
-                (WIDTH // 2, 230),
+                (140, 175, 220),
+                (WIDTH // 2, 132),
             )
             self.prompt_buttons = self.hud.draw_tutorial_prompt(
                 self.screen, self.prompt_selection
@@ -2206,6 +2283,12 @@ class Game:
                             main_surf, main_surf.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 30))
                         )
                     self.screen.blit(self.title_card_surf, (0, 0))
+
+        # Smooth fade-out overlay when launching game from INDIE CROSS Main Menu
+        if self.menu_fade_alpha > 1.0:
+            mf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            mf.fill((0, 0, 0, max(0, min(255, int(self.menu_fade_alpha)))))
+            self.screen.blit(mf, (0, 0))
 
         # Topmost transition overlay (Pixelated Iris Wipe or Respawn Fade)
         self.transition.draw(self.screen)

@@ -199,8 +199,8 @@ class GameMap:
             screen.blit(self._bg_dim_surf, (0, 0))
 
             for col_rect in self.collisions:
-                # Render all walkable floor slabs & steps (skip vertical walls / narrow energy gates)
-                if col_rect.width < 80 or col_rect.top < 420:
+                # Render all walkable floor slabs, steps & low tunnel ceilings (skip vertical walls / narrow gates)
+                if col_rect.width < 80 or col_rect.top < 360:
                     continue
                 sr = col_rect.move(-camera_x, -camera_y)
                 if sr.right < 0 or sr.left > sw or sr.bottom < 0 or sr.top > sh:

@@ -45,6 +45,8 @@
     <property name="one_way" type="bool" value="true"/>
    </properties>
   </object>
+  <!-- Zone 6 Low Solid Ceiling Tunnel Roof (y=404..476 -> 68px clearance above y=544 floor, cannot jump over spikes!) -->
+  <object id="12" x="2950" y="404" width="380" height="72"/>
   <!-- Zone 7 Dual-Slimer Combat One-Way Platform -->
   <object id="11" x="3720" y="448" width="200" height="16">
    <properties>

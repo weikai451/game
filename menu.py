@@ -1,3 +1,5 @@
+import math
+import random
 import pygame
 from Settings import WIDTH, HEIGHT, get_pixel_font
 from audio_manager import get_audio
@@ -86,7 +88,7 @@ class Menu:
                 self._nudge_slider(self.selected, -0.05)
             elif event.key in (pygame.K_RIGHT, pygame.K_d) and self.selected < num_sliders:
                 self._nudge_slider(self.selected, 0.05)
-            elif event.key == pygame.K_RETURN and self.selected >= num_sliders:
+            elif event.key in (pygame.K_RETURN, pygame.K_SPACE) and self.selected >= num_sliders:
                 return self.options[self.selected - num_sliders]
 
         elif event.type == pygame.MOUSEMOTION:
@@ -191,3 +193,213 @@ class Menu:
                 color = self.color_normal
             img = self.option_font.render(text, False, color)
             screen.blit(img, img.get_rect(center=rect.center))
+
+
+class MainMenu:
+    """
+    INDIE CROSS Dimensional Rift Main Menu (Pure Pygame Pixel Art, antialias=False):
+    - Deep void background (#07080F) with drifting cyan (#00D8FF) & crimson (#FF2A4B) pixel squares.
+    - Central low-frequency breathing 4-point Cross-Star Dimensional Rift (zero strobe).
+    - Chromatic dual-shadow 'INDIE CROSS' pixel logo + thin cyan-white divider line.
+    - Clean options: START GAME, CONTINUE (enabled only with Checkpoint save), SETTINGS, QUIT.
+    - Keyboard + Mouse dual input with smooth slide offset & rotating pixel Star Cursor.
+    """
+
+    OPTIONS = ("START GAME", "CONTINUE", "SETTINGS", "QUIT")
+
+    def __init__(self):
+        self.selected = 0
+        self.elapsed = 0.0
+        self.hover_offsets = [0.0 for _ in self.OPTIONS]
+
+        self.logo_font = get_pixel_font(84)
+        self.option_font = get_pixel_font(30)
+
+        # Pre-generate 48 drifting void pixel squares
+        self.particles = []
+        for _ in range(48):
+            self.particles.append(
+                [
+                    random.uniform(0, WIDTH),
+                    random.uniform(0, HEIGHT),
+                    random.uniform(-10.0, 10.0),
+                    random.uniform(-24.0, -7.0),
+                    random.choice((4, 4, 6, 6, 8)),
+                    random.choice(
+                        (
+                            (0, 216, 255),
+                            (0, 170, 225),
+                            (255, 42, 75),
+                            (215, 35, 65),
+                            (130, 145, 185),
+                        )
+                    ),
+                    random.uniform(0.0, math.tau),
+                ]
+            )
+
+    def _is_enabled(self, idx, has_save):
+        if self.OPTIONS[idx] == "CONTINUE":
+            return bool(has_save)
+        return True
+
+    def option_rect(self, idx):
+        w, h = 340, 48
+        x = (WIDTH - w) // 2
+        y = 350 + idx * 60
+        return pygame.Rect(x, y, w, h)
+
+    def update(self, dt):
+        self.elapsed += dt
+        for p in self.particles:
+            p[0] += p[2] * dt
+            p[1] += p[3] * dt
+            if p[1] < -12:
+                p[1] = HEIGHT + 10
+                p[0] = random.uniform(0, WIDTH)
+            elif p[0] < -12:
+                p[0] = WIDTH + 10
+            elif p[0] > WIDTH + 12:
+                p[0] = -10
+
+        for i in range(len(self.OPTIONS)):
+            target = 14.0 if i == self.selected else 0.0
+            self.hover_offsets[i] += (target - self.hover_offsets[i]) * min(1.0, dt * 14.0)
+
+    def _step_selection(self, delta, has_save):
+        n = len(self.OPTIONS)
+        cur = self.selected
+        for _ in range(n):
+            cur = (cur + delta) % n
+            if self._is_enabled(cur, has_save):
+                if cur != self.selected:
+                    self.selected = cur
+                    get_audio().play_sfx("prompt_pop")
+                return
+
+    def handle_event(self, event, has_save=False):
+        if not self._is_enabled(self.selected, has_save):
+            self.selected = 0
+
+        if event.type == pygame.KEYDOWN:
+            if event.key in (pygame.K_UP, pygame.K_w):
+                self._step_selection(-1, has_save)
+            elif event.key in (pygame.K_DOWN, pygame.K_s):
+                self._step_selection(1, has_save)
+            elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                if self._is_enabled(self.selected, has_save):
+                    get_audio().play_sfx("sheathe")
+                    return self.OPTIONS[self.selected]
+
+        elif event.type == pygame.MOUSEMOTION:
+            for i in range(len(self.OPTIONS)):
+                if self._is_enabled(i, has_save) and self.option_rect(i).collidepoint(event.pos):
+                    if self.selected != i:
+                        self.selected = i
+                        get_audio().play_sfx("prompt_pop")
+                    break
+
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            for i in range(len(self.OPTIONS)):
+                if self._is_enabled(i, has_save) and self.option_rect(i).collidepoint(event.pos):
+                    self.selected = i
+                    get_audio().play_sfx("sheathe")
+                    return self.OPTIONS[i]
+
+        return None
+
+    def _star_points(self, cx, cy, outer_r, inner_r, rot_rad=0.0):
+        pts = []
+        for i in range(8):
+            ang = rot_rad + i * (math.pi * 0.25)
+            r = outer_r if i % 2 == 0 else inner_r
+            pts.append((int(round(cx + math.cos(ang) * r)), int(round(cy + math.sin(ang) * r))))
+        return pts
+
+    def draw_void_background(self, screen):
+        """Render the animated #07080F void, drifting pixel squares & central breathing Cross-Star Rift."""
+        screen.fill((7, 8, 15))
+        t = self.elapsed
+
+        # 1. Drifting cyan & crimson pixel-square particles
+        for px, py, _, _, sz, col, phase in self.particles:
+            twinkle = 0.60 + 0.40 * math.sin(t * 2.2 + phase)
+            c = (int(col[0] * twinkle), int(col[1] * twinkle), int(col[2] * twinkle))
+            pygame.draw.rect(screen, c, (int(px), int(py), sz, sz))
+
+        # 2. Central low-frequency breathing 4-Point Cross-Star Rift (smooth 0.45Hz pulse, zero strobe)
+        cx, cy = WIDTH // 2, 224
+        breath = 1.0 + 0.08 * math.sin(t * 0.45 * math.tau)
+        rot = math.sin(t * 0.35) * 0.08
+
+        # Subtle concentric void rings
+        for ring_i in range(2):
+            r_rad = int((118 + ring_i * 42) * breath)
+            r_col = (18, 52, 74) if ring_i == 0 else (46, 14, 28)
+            pygame.draw.circle(screen, r_col, (cx, cy), r_rad, 2)
+
+        pts_cyan = self._star_points(cx, cy, 132.0 * breath, 24.0 * breath, rot_rad=rot)
+        pts_red = self._star_points(cx, cy, 112.0 * breath, 19.0 * breath, rot_rad=-rot * 0.6)
+        pts_core = self._star_points(cx, cy, 78.0 * breath, 12.0 * breath, rot_rad=0.0)
+
+        pygame.draw.polygon(screen, (0, 175, 215), pts_cyan)
+        pygame.draw.polygon(screen, (215, 34, 62), pts_red)
+        pygame.draw.polygon(screen, (7, 8, 15), pts_core)
+        pygame.draw.polygon(screen, (150, 235, 255), pts_core, 1)
+
+    def draw(self, screen, has_save=False):
+        self.draw_void_background(screen)
+        t = self.elapsed
+
+        # 1. Chromatic Dual-Shadow Pixel Title: 'INDIE CROSS' (antialias=False)
+        title_cx, title_cy = WIDTH // 2, 222
+        red_shadow = self.logo_font.render("INDIE CROSS", False, (230, 46, 77))
+        cyan_shadow = self.logo_font.render("INDIE CROSS", False, (0, 216, 255))
+        main_logo = self.logo_font.render("INDIE CROSS", False, (255, 255, 255))
+
+        screen.blit(red_shadow, red_shadow.get_rect(center=(title_cx - 5, title_cy + 3)))
+        screen.blit(cyan_shadow, cyan_shadow.get_rect(center=(title_cx + 5, title_cy + 3)))
+        screen.blit(main_logo, main_logo.get_rect(center=(title_cx, title_cy)))
+
+        # 2. Thin cyan-white gradient horizontal divider line beneath title
+        div_y = 292
+        half_w = 220
+        for step in range(half_w):
+            ratio = 1.0 - (step / half_w)
+            r_c = int(225 * ratio * ratio)
+            g_c = int(245 * ratio)
+            b_c = int(255 * ratio)
+            if b_c > 8:
+                pygame.draw.rect(screen, (r_c, g_c, b_c), (title_cx + step, div_y, 1, 2))
+                pygame.draw.rect(screen, (r_c, g_c, b_c), (title_cx - step, div_y, 1, 2))
+
+        # 3. Clean Interactive Menu Options + Rotating Pixel Star Cursor
+        for i, label in enumerate(self.OPTIONS):
+            rect = self.option_rect(i)
+            enabled = self._is_enabled(i, has_save)
+            is_sel = (i == self.selected) and enabled
+            slide_x = int(round(self.hover_offsets[i]))
+
+            if not enabled:
+                col = (88, 92, 112)
+            elif is_sel:
+                col = (225, 250, 255)
+            else:
+                col = (165, 175, 198)
+
+            txt_surf = self.option_font.render(label, False, col)
+            txt_rect = txt_surf.get_rect(center=(rect.centerx + slide_x, rect.centery))
+
+            if is_sel:
+                # Subtle cyan glow shadow behind active text
+                glow_surf = self.option_font.render(label, False, (0, 165, 210))
+                screen.blit(glow_surf, (txt_rect.x + 2, txt_rect.y + 2))
+                # Rotating / pulsing 4-point pixel Star Cursor on the left
+                star_cx = txt_rect.left - 24
+                star_cy = txt_rect.centery
+                star_r = 10.0 + 2.0 * math.sin(t * 6.0)
+                star_pts = self._star_points(star_cx, star_cy, star_r, 3.0, rot_rad=t * 2.2)
+                pygame.draw.polygon(screen, (0, 216, 255), star_pts)
+                pygame.draw.circle(screen, (255, 255, 255), (star_cx, star_cy), 2)
+
+            screen.blit(txt_surf, txt_rect)

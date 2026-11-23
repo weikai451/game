@@ -74,7 +74,7 @@ class Slimer(pygame.sprite.Sprite):
         ground_y=GROUND_Y,
         game_map=None,
         patrol_range=110.0,
-        max_hp=36,
+        max_hp=24,
         attack_damage=5,
     ):
         super().__init__()

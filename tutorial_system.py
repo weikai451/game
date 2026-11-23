@@ -123,30 +123,37 @@ class ParryBoltVFX(BaseVFX):
     """Slow, crisp glowing test energy bolt fired by ParryTurret for Perfect Parry practice."""
 
     def __init__(self, x, y, speed=-340.0, damage=12, turret=None, hitbox_list=None):
-        super().__init__(x, y, duration=2.2, hitbox=None)
+        super().__init__(x, y, duration=4.5, hitbox=None)
         self.vx = float(speed)
         self.turret = turret
         self.img = _load_tut_sprite("parry_bolt.png", (36, 28))
-        hb_rect = pygame.Rect(0, 0, 34, 28)
+        hb_rect = pygame.Rect(0, 0, 36, 30)
         hb_rect.center = (int(x), int(y))
+        # lifetime=None prevents double-ticking expiration between active_hitboxes and BaseVFX!
         hb = Hitbox(
             owner="boss",
             rect=hb_rect,
             damage=damage,
             knockback_x=-180.0,
-            lifetime=2.2,
+            lifetime=None,
             tag="tutorial_bolt",
         )
         hb.source_entity = turret
+        hb.vfx_owner = self
         self.bind_hitbox(hb)
         if hitbox_list is not None:
             hitbox_list.append(hb)
 
     def update(self, dt=1 / 60):
         super().update(dt)
+        if not self.alive():
+            return
         self.pos_x += self.vx * dt
         if self.hitbox and self.hitbox.active:
             self.hitbox.rect.center = (int(round(self.pos_x)), int(round(self.pos_y)))
+        # Destroy only when exiting Zone 5 world-space bounds (or on player hit/block/parry)
+        if self.pos_x < 2110.0 or self.pos_x > 2860.0:
+            self.destroy()
 
     def draw(self, screen, camera_x=0, camera_y=0):
         sx = int(round(self.pos_x - camera_x))
@@ -397,8 +404,15 @@ class TestHazardSpikes:
         if self.triggered:
             self.retract_ratio = min(1.0, self.retract_ratio + dt * 2.6)
             return False
-        if player is not None and player.alive() and self.rect.colliderect(player.hurtbox):
+        if player is not None and player.alive() and (
+            self.rect.colliderect(player.collision_rect) or self.rect.colliderect(player.hurtbox)
+        ):
+            # Intentionally pierces Q-Dash i-frames so player MUST take 1 low-damage test hit
+            # inside the low-ceiling tunnel, then spikes retract immediately!
             self.triggered = True
+            if getattr(player, "is_dashing", False):
+                player.is_dashing = False
+                player.dash_timer = 0.0
             if not getattr(player, "god_mode", False):
                 player.player_hp = max(30, min(player.player_hp - 25, 75))
             else:
@@ -447,7 +461,7 @@ class GuidedTutorialManager:
         self.orb_1 = PogoTargetOrb(x=1860, y=572)
         self.orb_2 = PogoTargetOrb(x=2000, y=508)
         self.turret = ParryTurret(target_player=game.player, x=2680, ground_y=544)
-        self.test_spikes = TestHazardSpikes(start_x=3010, end_x=3090, ground_y=544)
+        self.test_spikes = TestHazardSpikes(start_x=2990, end_x=3294, ground_y=544)
         self.flask_practiced = False
         self._last_flask_count = getattr(game.player, "flasks", 3)
 
@@ -457,7 +471,7 @@ class GuidedTutorialManager:
             ground_y=544,
             game_map=game.game_map,
             patrol_range=95.0,
-            max_hp=36,
+            max_hp=24,
             attack_damage=6,
         )
         self.slimer_2 = Slimer(
@@ -466,7 +480,7 @@ class GuidedTutorialManager:
             ground_y=544,
             game_map=game.game_map,
             patrol_range=95.0,
-            max_hp=36,
+            max_hp=24,
             attack_damage=6,
         )
 
@@ -622,7 +636,7 @@ class GuidedTutorialManager:
             (1640, 640, "In Air: [S + Left Click] Downward Pogo"),
             (2250, 544, "[Hold Right Click] Guard"),
             (2485, 544, "Tap Before Hit: Perfect Parry"),
-            (3210, 544, "[R] Drink Flask (Heal 20% HP, Cannot Move)"),
+            (3355, 544, "[R] Drink Flask (Heal 20% HP, Cannot Move)"),
             (3590, 544, "COMBAT TRIAL: Defeat 2 Slimers!"),
             (4360, 544, "[E] Save, Full Heal & Refill Flasks"),
         ]
