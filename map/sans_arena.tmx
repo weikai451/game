@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="104" height="58" tilewidth="16" tileheight="16" infinite="0" nextlayerid="3" nextobjectid="10">
+ <objectgroup id="2" name="Collisions">
+  <!-- 1.2x Expanded Solid Left & Right Judgement Hall Walls (1664 x 928 px) -->
+  <object id="1" x="64" y="0" width="48" height="928"/>
+  <object id="2" x="1552" y="0" width="48" height="928"/>
+
+  <!-- Continuous 1.2x Expanded Solid Judgement Hall Floor (y = 784) -->
+  <object id="3" x="64" y="784" width="1536" height="144"/>
+
+  <!-- 3 Expanded One-Way / Drop-Through Platforms for Dodging Bone Waves & Gaster Blasters -->
+  <object id="4" x="272" y="672" width="256" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+  <object id="5" x="688" y="576" width="288" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+  <object id="6" x="1136" y="672" width="256" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+
+  <!-- Portal to Stage 3: Vergil Boss Arena (Unlocked & Visible ONLY after defeating Sans) -->
+  <object id="7" x="1328" y="656" width="96" height="128">
+   <properties>
+    <property name="spawn_x" type="int" value="280"/>
+    <property name="spawn_y" type="int" value="656"/>
+    <property name="target" value="boss1_arena.tmx"/>
+   </properties>
+  </object>
+ </objectgroup>
+</map>

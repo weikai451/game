@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="230" height="50" tilewidth="16" tileheight="16" infinite="0" nextlayerid="21" nextobjectid="63">
+ <objectgroup id="3" name="Collisions">
+  <object id="1" x="-32" y="0" width="48" height="800"/>
+  <object id="2" x="3632" y="0" width="64" height="800"/>
+  <object id="12" x="0" y="640" width="1856" height="160"/>
+  <object id="23" x="1856" y="656" width="264" height="144"/>
+  <object id="24" x="2120" y="656" width="1528" height="144"/>
+  <object id="9" x="672" y="560" width="160" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+  <object id="7" x="832" y="496" width="368" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+  <object id="19" x="1504" y="544" width="192" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+  <object id="30" x="1720" y="464" width="160" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+  <object id="35" x="2360" y="552" width="224" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+  <object id="36" x="2760" y="464" width="240" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+  <object id="37" x="3160" y="552" width="224" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+  <object id="20" x="3420" y="528" width="96" height="128">
+   <properties>
+    <property name="spawn_x" type="int" value="280"/>
+    <property name="spawn_y" type="int" value="656"/>
+    <property name="target" value="boss1_arena.tmx"/>
+   </properties>
+  </object>
+ </objectgroup>
+ <objectgroup id="8" name="checkpoints">
+  <object id="40" x="1160" y="544" width="56" height="96">
+   <properties>
+    <property name="order" type="int" value="1"/>
+   </properties>
+  </object>
+  <object id="41" x="2040" y="560" width="56" height="96">
+   <properties>
+    <property name="order" type="int" value="2"/>
+   </properties>
+  </object>
+ </objectgroup>
+</map>

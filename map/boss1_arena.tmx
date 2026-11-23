@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="86" height="48" tilewidth="16" tileheight="16" infinite="0" nextlayerid="4" nextobjectid="12">
+ <imagelayer id="3" name="arena_bg">
+  <image source="../Background/1794369877818.jpg" width="1376" height="768"/>
+ </imagelayer>
+ <objectgroup id="2" name="Collisions">
+  <!-- Solid Left & Right Arena Walls -->
+  <object id="1" x="64" y="0" width="48" height="768"/>
+  <object id="2" x="1264" y="0" width="48" height="768"/>
+
+  <!-- Continuous Solid Arena Floor -->
+  <object id="3" x="64" y="656" width="1248" height="112"/>
+
+  <!-- Symmetrical One-Way / Drop-Through Battle Platforms (y=552, 104px above floor) -->
+  <object id="4" x="240" y="552" width="224" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+  <object id="5" x="912" y="552" width="224" height="16">
+   <properties>
+    <property name="one_way" type="bool" value="true"/>
+   </properties>
+  </object>
+
+  <!-- Victory Exit Portal (Unlocked & Visible ONLY after defeating Vergil) -->
+  <object id="6" x="1060" y="528" width="96" height="128">
+   <properties>
+    <property name="spawn_x" type="int" value="140"/>
+    <property name="spawn_y" type="int" value="640"/>
+    <property name="target" value="main_world.tmx"/>
+   </properties>
+  </object>
+ </objectgroup>
+</map>
