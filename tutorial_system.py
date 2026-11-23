@@ -233,7 +233,7 @@ class ParryTurret(pygame.sprite.Sprite):
         player_in_zone = (
             self.target is not None
             and self.target.alive()
-            and 1490 <= self.target.pos_x <= 2040
+            and 2140 <= self.target.pos_x <= 2740
         )
 
         if self.state == "IDLE":
@@ -292,14 +292,147 @@ class ParryTurret(pygame.sprite.Sprite):
             screen.blit(lbl, lbl.get_rect(center=(sx, sy - 14)))
 
 
+class SwitchCrystal:
+    """Zone 1 floating glowing switch crystal above the One-Way Platform."""
+
+    def __init__(self, x, y):
+        self.x = float(x)
+        self.y = float(y)
+        self.activated = False
+        self.timer = 0.0
+        self.rect = pygame.Rect(0, 0, 36, 44)
+        self.rect.center = (int(x), int(y))
+
+    def update(self, dt, player):
+        self.timer += dt
+        if not self.activated and player is not None and player.alive():
+            if self.rect.colliderect(player.collision_rect):
+                self.activated = True
+                get_audio().play_sfx("level_clear")
+                return True
+        return False
+
+    def draw(self, surface, camera_x, camera_y, font):
+        bob = math.sin(self.timer * 4.5) * 4.0
+        sx = int(round(self.x - camera_x))
+        sy = int(round(self.y + bob - camera_y))
+        pts = [(sx, sy - 18), (sx + 13, sy), (sx, sy + 18), (sx - 13, sy)]
+        fill_col = (85, 255, 165) if self.activated else (70, 220, 255)
+        edge_col = (235, 255, 245)
+        pygame.draw.polygon(surface, fill_col, pts)
+        pygame.draw.polygon(surface, edge_col, pts, 2)
+        lbl = "ACTIVATED" if self.activated else "TOUCH CRYSTAL"
+        t_surf = font.render(lbl, False, fill_col)
+        surface.blit(t_surf, t_surf.get_rect(center=(sx, sy - 28)))
+
+
+class LaserBarrier:
+    """
+    Zone 2 continuous vertical laser barrier:
+    - Walking into it knocks player back & deals 10 HP.
+    - Pressing [Q] Dash (i-frames) phases cleanly straight through!
+    """
+
+    def __init__(self, x, top_y, bottom_y):
+        self.x = float(x)
+        self.top_y = float(top_y)
+        self.bottom_y = float(bottom_y)
+        self.rect = pygame.Rect(int(x - 10), int(top_y), 20, int(bottom_y - top_y))
+        self.hit_cooldown = 0.0
+        self.timer = 0.0
+
+    def update(self, dt, player):
+        self.timer += dt
+        if self.hit_cooldown > 0.0:
+            self.hit_cooldown = max(0.0, self.hit_cooldown - dt)
+        if player is None or not player.alive():
+            return
+        if self.rect.colliderect(player.hurtbox):
+            if getattr(player, "is_dashing", False):
+                return
+            if self.hit_cooldown <= 0.0:
+                self.hit_cooldown = 0.55
+                if not getattr(player, "god_mode", False):
+                    player.player_hp = max(30, player.player_hp - 10)
+                push_dir = -1 if player.pos_x < self.x else 1
+                player.knockback_vel_x = push_dir * 320.0
+                player.pos_x = (self.x - 28.0) if push_dir < 0 else (self.x + 28.0)
+                player.sync_boxes()
+                player.status_text = "USE [Q] DASH TO PHASE THROUGH LASER!"
+                player.status_timer = 1.2
+                get_audio().play_sfx("player_hurt")
+
+    def draw(self, surface, camera_x, camera_y, font):
+        sx = int(round(self.x - camera_x))
+        ty = int(round(self.top_y - camera_y))
+        by = int(round(self.bottom_y - camera_y))
+        pulse = int(4 + 3 * abs(math.sin(self.timer * 14.0)))
+        # Emitter caps
+        pygame.draw.rect(surface, (75, 78, 95), (sx - 14, ty - 10, 28, 12))
+        pygame.draw.rect(surface, (75, 78, 95), (sx - 14, by - 4, 28, 10))
+        # Outer red glow + blazing white-orange core
+        pygame.draw.line(surface, (235, 35, 65), (sx, ty), (sx, by), 10 + pulse)
+        pygame.draw.line(surface, (255, 165, 80), (sx, ty), (sx, by), 5)
+        pygame.draw.line(surface, (255, 248, 240), (sx, ty), (sx, by), 2)
+        lbl = font.render("DASH THROUGH [Q]", False, (255, 150, 165))
+        surface.blit(lbl, lbl.get_rect(center=(sx, ty - 22)))
+
+
+class TestHazardSpikes:
+    """
+    Zone 6 retractable test spikes:
+    - Deals 25 HP once on touch (clamped >= 30 HP) so player must practice [R] Flask,
+      then smoothly retracts into the floor!
+    """
+
+    def __init__(self, start_x, end_x, ground_y):
+        self.start_x = int(start_x)
+        self.end_x = int(end_x)
+        self.ground_y = int(ground_y)
+        self.triggered = False
+        self.retract_ratio = 0.0  # 0.0 = extended, 1.0 = retracted
+        self.rect = pygame.Rect(self.start_x, self.ground_y - 20, self.end_x - self.start_x, 20)
+
+    def update(self, dt, player):
+        if self.triggered:
+            self.retract_ratio = min(1.0, self.retract_ratio + dt * 2.6)
+            return False
+        if player is not None and player.alive() and self.rect.colliderect(player.hurtbox):
+            self.triggered = True
+            if not getattr(player, "god_mode", False):
+                player.player_hp = max(30, min(player.player_hp - 25, 75))
+            else:
+                player.player_hp = min(player.player_hp, 75)
+            player.invincible_timer = 0.45
+            player.status_text = "OUCH! STAND STILL & PRESS [R] TO DRINK FLASK"
+            player.status_timer = 1.8
+            get_audio().play_sfx("player_hurt")
+            return True
+        return False
+
+    def draw(self, surface, camera_x, camera_y):
+        h = int(round(18 * (1.0 - self.retract_ratio)))
+        if h <= 1:
+            return
+        for wx in range(self.start_x, self.end_x, 16):
+            sx = int(wx - camera_x)
+            sy = int(self.ground_y - camera_y)
+            pygame.draw.polygon(surface, (225, 55, 75), [(sx, sy), (sx + 8, sy - h), (sx + 16, sy)])
+            pygame.draw.polygon(
+                surface, (255, 200, 205), [(sx + 3, sy), (sx + 8, sy - max(2, h - 4)), (sx + 13, sy)], 1
+            )
+
+
 class GuidedTutorialManager:
     """
-    Redesigned 5-Zone Interactive Guided Tutorial:
-    - Zone 1 (x < 620): Movement, Jump, Drop-Through & Q-Key Dash across 200px Chasm
-    - Zone 2 (620 <= x < 1480): Left Click Attack (Training Dummy) & 2x Pogo Orbs
-    - Zone 3 (1480 <= x < 2160): Right Click Perfect Parry vs ParryTurret Test Bolts
-    - Zone 4 (2160 <= x < 2660): Practical Combat Trial (Slimer after learning all moves!)
-    - Zone 5 (x >= 2660): Checkpoint Save/Heal & Portal to Seamless Stage 1
+    Comprehensive 7-Zone Progressive Tutorial Level (4864 x 768):
+    - Zone 1 (0..620): Movement, Jump, One-Way Drop-Through + Switch Crystal -> Gate 1
+    - Zone 2 (620..1240): [Q] Dash Chasm + Invincible Laser Barrier
+    - Zone 3 (1240..1760): [Left Click] Basic Melee Attack vs Training Dummy -> Gate 2
+    - Zone 4 (1760..2120): Aerial [S + Left Click] Downward Pogo x2 across Pit
+    - Zone 5 (2120..2860): [Hold RMB] Guard & Tap Perfect Parry vs Parry Turret -> Gate 3
+    - Zone 6 (2860..3480): Retractable Test Spikes + [R] Drink Flask -> Gate 4
+    - Zone 7 (3480..4864): Dual Slimer Combat -> Gate 5 -> Checkpoint [E] Refill -> Indie Cross Rift!
     """
 
     def __init__(self, game):
@@ -307,39 +440,65 @@ class GuidedTutorialManager:
         self.font = get_pixel_font(16)
         self.sign_img = _load_tut_sprite("signpost.png", (48, 56))
 
-        self.dummy = TrainingDummy(x=820, ground_y=640)
-        self.orb_1 = PogoTargetOrb(x=1230, y=566)
-        self.orb_2 = PogoTargetOrb(x=1365, y=506)
-        self.turret = ParryTurret(target_player=game.player, x=1980, ground_y=544)
-        # Practice Slimer placed in Zone 4 (AFTER ParryTurret, BEFORE final Checkpoint & Portal!)
-        self.practice_slimer = Slimer(
+        # Zone 1..7 interactive mechanisms & targets
+        self.crystal = SwitchCrystal(x=430, y=472)
+        self.laser = LaserBarrier(x=1120, top_y=440, bottom_y=640)
+        self.dummy = TrainingDummy(x=1520, ground_y=640)
+        self.orb_1 = PogoTargetOrb(x=1860, y=572)
+        self.orb_2 = PogoTargetOrb(x=2000, y=508)
+        self.turret = ParryTurret(target_player=game.player, x=2680, ground_y=544)
+        self.test_spikes = TestHazardSpikes(start_x=3010, end_x=3090, ground_y=544)
+        self.flask_practiced = False
+        self._last_flask_count = getattr(game.player, "flasks", 3)
+
+        self.slimer_1 = Slimer(
             target_player=game.player,
-            start_x=2410,
+            start_x=3740,
             ground_y=544,
             game_map=game.game_map,
-            patrol_range=110.0,
+            patrol_range=95.0,
             max_hp=36,
-            attack_damage=5,
+            attack_damage=6,
+        )
+        self.slimer_2 = Slimer(
+            target_player=game.player,
+            start_x=3980,
+            ground_y=544,
+            game_map=game.game_map,
+            patrol_range=95.0,
+            max_hp=36,
+            attack_damage=6,
         )
 
-        self.gate1_rect = pygame.Rect(1050, 440, 28, 200)
+        # 5 Sequential Energy Gates
+        self.gate1_rect = pygame.Rect(590, 440, 28, 200)
         self.gate1_open = False
-        self.gate2_rect = pygame.Rect(2100, 344, 28, 200)
+        self.gate2_rect = pygame.Rect(1710, 440, 28, 200)
         self.gate2_open = False
-        self.gate3_rect = pygame.Rect(2620, 344, 28, 200)
+        self.gate3_rect = pygame.Rect(2810, 344, 28, 200)
         self.gate3_open = False
+        self.gate4_rect = pygame.Rect(3420, 344, 28, 200)
+        self.gate4_open = False
+        self.gate5_rect = pygame.Rect(4180, 344, 28, 200)
+        self.gate5_open = False
 
-        self.game.game_map.collisions.append(self.gate1_rect)
-        self.game.game_map.collisions.append(self.gate2_rect)
-        self.game.game_map.collisions.append(self.gate3_rect)
+        for g in (self.gate1_rect, self.gate2_rect, self.gate3_rect, self.gate4_rect, self.gate5_rect):
+            self.game.game_map.collisions.append(g)
 
-        self.game.regular_enemies.add(self.practice_slimer)
-        for ent in (self.dummy, self.orb_1, self.orb_2, self.turret, self.practice_slimer):
+        self.game.regular_enemies.add(self.slimer_1, self.slimer_2)
+        for ent in (self.dummy, self.orb_1, self.orb_2, self.turret, self.slimer_1, self.slimer_2):
             self.game.enemies.add(ent)
             self.game.all_sprites.add(ent)
 
         # Bind ParryTurret as game.boss so Perfect Parry / Block resolution works natively
         self.game.boss = self.turret
+
+    def _open_gate(self, gate_rect, status_msg):
+        if gate_rect in self.game.game_map.collisions:
+            self.game.game_map.collisions.remove(gate_rect)
+        get_audio().play_sfx("level_clear")
+        self.game.player.status_text = status_msg
+        self.game.player.status_timer = 1.4
 
     def update(self, scaled_dt):
         player = self.game.player
@@ -349,101 +508,123 @@ class GuidedTutorialManager:
         self.dummy.update(scaled_dt)
         self.orb_1.update(scaled_dt)
         self.orb_2.update(scaled_dt)
+        self.laser.update(scaled_dt, player)
+        self.test_spikes.update(scaled_dt, player)
 
-        # Zone 1 Dash Chasm safety reset
-        if 420 <= player.pos_x <= 618 and player.pos_y >= 695:
-            player.teleport(360, 640)
+        # Zone 1: Switch Crystal -> Gate 1
+        if self.crystal.update(scaled_dt, player) and not self.gate1_open:
+            self.gate1_open = True
+            self._open_gate(self.gate1_rect, "CRYSTAL ACTIVATED! DROP DOWN & ADVANCE >>")
+
+        # Zone 2: Dash Chasm safety reset
+        if 792 <= player.pos_x <= 1008 and player.pos_y >= 695:
+            player.teleport(740, 640)
             player.status_text = "TRY AGAIN: Jump + Press [Q] to Dash Across!"
             player.status_timer = 1.4
 
-        # Open Gate 1 once Training Dummy is destroyed
-        if not self.gate1_open and not self.dummy.alive():
-            self.gate1_open = True
-            if self.gate1_rect in self.game.game_map.collisions:
-                self.game.game_map.collisions.remove(self.gate1_rect)
-            get_audio().play_sfx("level_clear")
-            player.status_text = "GATE OPENED! ADVANCE TO POGO PIT >>"
-            player.status_timer = 1.3
-
-        # Zone 2 Pogo Pit safety reset
-        if 1142 <= player.pos_x <= 1475 and player.pos_y >= 695:
-            player.teleport(1090, 640)
-            player.status_text = "TRY AGAIN: Hold [S] + [Left Click] on the Orbs!"
-            player.status_timer = 1.4
-
-        # Open Gate 2 when Parry Turret is shattered (2 Perfect Parries)
-        if not self.gate2_open and not self.turret.alive():
+        # Zone 3: Training Dummy -> Gate 2
+        if not self.gate2_open and not self.dummy.alive():
             self.gate2_open = True
-            if self.gate2_rect in self.game.game_map.collisions:
-                self.game.game_map.collisions.remove(self.gate2_rect)
-            get_audio().play_sfx("level_clear")
-            player.status_text = "PARRY MASTERED! ENTER COMBAT TRIAL >>"
+            self._open_gate(self.gate2_rect, "DUMMY DESTROYED! ADVANCE TO POGO PIT >>")
+
+        # Zone 4: Pogo Pit safety reset
+        if 1762 <= player.pos_x <= 2115 and player.pos_y >= 695:
+            player.teleport(1720, 640)
+            player.status_text = "TRY AGAIN: In Air Hold [S] + [Left Click] on Orbs!"
             player.status_timer = 1.4
 
-        # Open Gate 3 once Practice Slimer in Zone 4 is defeated
-        if not self.gate3_open and not self.practice_slimer.alive():
+        # Zone 5: Parry Turret (2 Perfect Parries) -> Gate 3
+        if not self.gate3_open and not self.turret.alive():
             self.gate3_open = True
-            if self.gate3_rect in self.game.game_map.collisions:
-                self.game.game_map.collisions.remove(self.gate3_rect)
-            if player.player_hp >= 100:
-                player.player_hp = 75
-                self.game.hud.player_display_hp = 75.0
-            get_audio().play_sfx("level_clear")
-            player.status_text = "COMBAT TRIAL COMPLETE! HEAD TO SHRINE >>"
-            player.status_timer = 1.4
+            self._open_gate(self.gate3_rect, "PARRY MASTERED! ADVANCE TO HEALING ZONE >>")
+
+        # Zone 6: Detect drinking a Healing Flask -> Gate 4
+        cur_flasks = getattr(player, "flasks", 3)
+        if player.pos_x >= 2860:
+            if (cur_flasks < self._last_flask_count and getattr(player, "drink_healed", False)) or (
+                getattr(player, "drink_healed", False) and not self.flask_practiced
+            ):
+                self.flask_practiced = True
+            if self.test_spikes.triggered and self.flask_practiced and not self.gate4_open:
+                self.gate4_open = True
+                self._open_gate(self.gate4_rect, "FLASK HEAL COMPLETE! ENTER FINAL TRIAL >>")
+        self._last_flask_count = cur_flasks
+
+        # Zone 7: Both Slimers defeated -> Gate 5 (unlocks Checkpoint & Rift Altar)
+        if not self.gate5_open and not self.slimer_1.alive() and not self.slimer_2.alive():
+            self.gate5_open = True
+            self._open_gate(self.gate5_rect, "TRIAL COMPLETE! REST AT SHRINE [E] & ADVANCE >>")
 
     def get_current_stage_info(self, player_x):
         if player_x < 620:
             return (
-                "ZONE 1 / 5 : MOVE, JUMP, DROP-THROUGH & DASH",
-                "[A/D] Move  |  [SPACE] Jump  |  [S+SPACE] Drop Down  |  [Q] Dash",
-                "Jump and press [Q] to Dash across the wide 200px chasm ahead!",
-                False,
+                "ZONE 1 / 7 : MOVEMENT, JUMP & DROP-THROUGH",
+                "[A / D] Move  |  [SPACE] Jump  |  [S + SPACE] Drop Down",
+                "Jump onto the One-Way Platform and touch the glowing Switch Crystal to open Gate 1!",
+                self.gate1_open,
             )
-        if player_x < 1480:
-            if not self.gate1_open:
-                return (
-                    "ZONE 2 / 5 : BASIC ATTACK TRAINING",
-                    "Press [Left Click] to Destroy the Training Dummy and Open Gate 1!",
-                    "Combine [A/D] movement with crisp melee strikes.",
-                    False,
-                )
+        if player_x < 1240:
             return (
-                "ZONE 2 / 5 : AERIAL DOWNWARD SLASH (POGO x2)",
-                "In Mid-Air: Hold [S / DOWN] + [Left Click] to Bounce off Both Glowing Orbs!",
-                "You can Pogo Bounce up to 2 times in mid-air (and Pogo refreshes your [Q] Air Dash!).",
-                False,
+                "ZONE 2 / 7 : DASH & INVINCIBILITY FRAMES",
+                "Press [Q] to Dash Across the Chasm & Phase Through the Vertical Laser!",
+                "Dash grants brief invincibility frames (i-frames) to pass straight through danger.",
+                player_x > 1135,
             )
-        if player_x < 2160:
+        if player_x < 1760:
             return (
-                "ZONE 3 / 5 : PERFECT PARRY PRACTICE",
-                "Press [Right Click] Right Before the Turret's Bolt Hits to Trigger PERFECT PARRY!",
-                f"Land {self.turret.parries_required} Perfect Parries to shatter the turret and unlock Zone 4.",
+                "ZONE 3 / 7 : BASIC MELEE SLASH",
+                "Press [Left Click] Repeatedly to Destroy the Training Dummy!",
+                "Shatter the Dummy blocking the path to unlock Gate 2.",
                 self.gate2_open,
             )
-        if player_x < 2660:
+        if player_x < 2120:
             return (
-                "ZONE 4 / 5 : LIVE COMBAT TRIAL (SLIMER)",
-                "Defeat the Slimer! Attack, Pogo, Parry, [Q] Dash & Press [R] on Ground for Healing Flask!",
-                "Put everything you learned together (+20% HP per Flask, refilled at Shrines).",
+                "ZONE 4 / 7 : AERIAL DOWNWARD SLASH (POGO x2)",
+                "In Mid-Air: Hold [S] + [Left Click] to Bounce off Both Glowing Pogo Orbs!",
+                "Each Pogo bounce lifts you higher and refreshes your [Q] Air Dash.",
+                False,
+            )
+        if player_x < 2860:
+            return (
+                "ZONE 5 / 7 : GUARD & PERFECT PARRY",
+                "[Hold Right Click] Guard  |  Tap [Right Click] Before Hit: PERFECT PARRY!",
+                f"Land {self.turret.parries_required} Perfect Parries to charge & unlock Gate 3.",
                 self.gate3_open,
             )
+        if player_x < 3480:
+            return (
+                "ZONE 6 / 7 : HEALING FLASK SYSTEM",
+                "Stand on Ground & Press [R] to Drink Flask (+20% HP, Cannot Move While Drinking)",
+                "Step over the test spikes, then press [R] to heal and open Gate 4!",
+                self.gate4_open,
+            )
+        if player_x < 4200:
+            return (
+                "ZONE 7 / 7 : FINAL COMBAT TRIAL (2 SLIMERS)",
+                "Defeat Both Slimers Using Slash, Pogo, Dash, Perfect Parry & Flasks!",
+                "Clear both enemies to unlock the Checkpoint Shrine & Dimensional Rift.",
+                self.gate5_open,
+            )
         return (
-            "ZONE 5 / 5 : SHRINE & DIMENSIONAL ANOMALY",
-            "Press [E] at the Shrine to Save & Heal  |  Advance Right to Enter the Dimensional Rift!",
-            "A strange spatial distortion awaits ahead... step forward to begin Stage 1.",
+            "ZONE 7 / 7 : SHRINE REFILL & DIMENSIONAL RIFT",
+            "Press [E] at the Shrine (Full Heal + Refill 3 Flasks)  |  Walk Right to the Altar!",
+            "Rest at the Checkpoint, then step onto the Dimensional Altar to begin your journey.",
             True,
         )
 
     def draw_world_elements(self, surface, camera_x, camera_y):
-        # 1. Signposts (cached signpost.png + crisp pixel labels)
+        # 1. Pixel Signposts across all 7 Zones (antialias=False)
         signposts = [
-            (130, 640, "[A/D] Move | [SPACE] Jump"),
-            (345, 640, "Jump + [Q] Dash Across!"),
-            (700, 640, "[Left Click] Attack Dummy"),
-            (1095, 640, "Air [S + Left Click] Pogo x2"),
-            (1640, 544, "[Right Click] Perfect Parry"),
-            (2220, 544, "COMBAT TRIAL: Defeat Slimer!"),
+            (120, 640, "[A / D] Move | [SPACE] Jump"),
+            (430, 512, "[S + SPACE] Drop Down"),
+            (715, 640, "[Q] Dash (Invincible)"),
+            (1350, 640, "[Left Click] Slash Attack"),
+            (1640, 640, "In Air: [S + Left Click] Downward Pogo"),
+            (2250, 544, "[Hold Right Click] Guard"),
+            (2485, 544, "Tap Before Hit: Perfect Parry"),
+            (3210, 544, "[R] Drink Flask (Heal 20% HP, Cannot Move)"),
+            (3590, 544, "COMBAT TRIAL: Defeat 2 Slimers!"),
+            (4360, 544, "[E] Save, Full Heal & Refill Flasks"),
         ]
         for wx, wy, label in signposts:
             sx = int(wx - camera_x)
@@ -453,8 +634,13 @@ class GuidedTutorialManager:
                 surface, wx, wy - 60, camera_x, camera_y, label, self.font
             )
 
-        # 2. Chasm & Pogo Pit Hazard Spikes
-        for spike_start, spike_end, spike_y in ((428, 612, 728), (1148, 1472, 728)):
+        # 2. Zone 1 Crystal, Zone 2 Laser Barrier, Zone 6 Retractable Test Spikes
+        self.crystal.draw(surface, camera_x, camera_y, self.font)
+        self.laser.draw(surface, camera_x, camera_y, self.font)
+        self.test_spikes.draw(surface, camera_x, camera_y)
+
+        # 3. Zone 2 Dash Chasm & Zone 4 Pogo Pit Hazard Spikes
+        for spike_start, spike_end, spike_y in ((798, 1002, 728), (1768, 2112, 728)):
             for sx_w in range(spike_start, spike_end, 16):
                 sx = int(sx_w - camera_x)
                 sy = int(spike_y - camera_y)
@@ -465,11 +651,13 @@ class GuidedTutorialManager:
                     surface, (255, 190, 195), [(sx + 3, sy), (sx + 8, sy - 11), (sx + 13, sy)], 1
                 )
 
-        # 3. Energy Gates
+        # 4. 5 Sequential Energy Gates
         for gate_rect, is_open, lbl_txt in (
-            (self.gate1_rect, self.gate1_open, "HIT DUMMY"),
-            (self.gate2_rect, self.gate2_open, "PARRY x2"),
-            (self.gate3_rect, self.gate3_open, "DEFEAT SLIMER"),
+            (self.gate1_rect, self.gate1_open, "TOUCH CRYSTAL"),
+            (self.gate2_rect, self.gate2_open, "BREAK DUMMY"),
+            (self.gate3_rect, self.gate3_open, "PARRY x2"),
+            (self.gate4_rect, self.gate4_open, "DRINK FLASK [R]"),
+            (self.gate5_rect, self.gate5_open, "DEFEAT 2 SLIMERS"),
         ):
             if not is_open:
                 gr = gate_rect.move(-camera_x, -camera_y)
@@ -480,24 +668,12 @@ class GuidedTutorialManager:
                 t_surf = self.font.render(lbl_txt, False, (255, 220, 220))
                 surface.blit(t_surf, t_surf.get_rect(center=(gr.centerx, gr.top - 12)))
 
-        # 4. Target UI overlays
+        # 5. Target UI overlays (Note: Zone 7 end rift trigger at x>=4620 is strictly INVISIBLE
+        # so the sudden mid-air Dimensional Cross-Star Rift ambush feels completely unexpected!)
         self.dummy.draw_ui(surface, camera_x, camera_y, self.font)
         self.turret.draw_ui(surface, camera_x, camera_y, self.font)
 
     def draw_hud_banner(self, screen, hud):
-        title, primary, secondary, done = self.get_current_stage_info(self.game.player.pos_x)
-        bw, bh = 860, 74
-        bx = (screen.get_width() - bw) // 2
-        by = 18
-        panel = pygame.Surface((bw, bh), pygame.SRCALPHA)
-        panel.fill((14, 18, 30, 215))
-        screen.blit(panel, (bx, by))
-        border_col = (85, 245, 155) if done else (85, 225, 255)
-        pygame.draw.rect(screen, border_col, (bx, by, bw, bh), 2, border_radius=5)
-
-        t_surf = hud.font_hud.render(title, False, border_col)
-        p_surf = hud.font_hud.render(primary, False, (255, 255, 255))
-        s_surf = hud.font_hud.render(secondary, False, (185, 200, 225))
-        screen.blit(t_surf, t_surf.get_rect(center=(bx + bw // 2, by + 16)))
-        screen.blit(p_surf, p_surf.get_rect(center=(bx + bw // 2, by + 38)))
-        screen.blit(s_surf, s_surf.get_rect(center=(bx + bw // 2, by + 58)))
+        # Intentionally disabled: world pixel signposts provide clean, non-redundant guidance
+        # without cluttering the top of the screen with blue mission text banners.
+        return

@@ -25,6 +25,7 @@ class GameMap:
         self.tmx_data = pytmx.load_pygame(map_path)
         lower_path = map_path.lower()
         self.is_golden_hall = ("main_world" in lower_path) or ("sans_arena" in lower_path)
+        self.is_tutorial_map = "tutorial" in lower_path
         self.gold_floor_tile = (
             _load_cached_tile(os.path.join("assets", "tiles", "gold_hall_floor.png"))
             if self.is_golden_hall
@@ -35,6 +36,12 @@ class GameMap:
             if self.is_golden_hall
             else None
         )
+        self.tutorial_floor_tile = (
+            _load_cached_tile(os.path.join("assets", "tiles", "tutorial_floor.png"))
+            if self.is_tutorial_map
+            else None
+        )
+        self._bg_dim_surf = None
 
         # Map dimensions
         self.tile_width = self.tmx_data.tilewidth
@@ -183,8 +190,40 @@ class GameMap:
                         continue
                     screen.blit(image, (screen_x, screen_y))
 
-        # 1b. In Golden Hall stages (main_world / sans_arena), render cohesive warm-amber tiled stone floors
-        if self.is_golden_hall:
+        # 1b. In Golden Hall & Tutorial stages, render solid floor/step slabs directly from
+        # self.collisions so visual top edges match physics col_rect.top with exact 0-pixel accuracy!
+        if self.is_tutorial_map:
+            if self._bg_dim_surf is None or self._bg_dim_surf.get_size() != (sw, sh):
+                self._bg_dim_surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
+                self._bg_dim_surf.fill((12, 16, 28, 72))
+            screen.blit(self._bg_dim_surf, (0, 0))
+
+            for col_rect in self.collisions:
+                # Render all walkable floor slabs & steps (skip vertical walls / narrow energy gates)
+                if col_rect.width < 80 or col_rect.top < 420:
+                    continue
+                sr = col_rect.move(-camera_x, -camera_y)
+                if sr.right < 0 or sr.left > sw or sr.bottom < 0 or sr.top > sh:
+                    continue
+                if self.tutorial_floor_tile is not None:
+                    tw = self.tutorial_floor_tile.get_width()
+                    th = self.tutorial_floor_tile.get_height()
+                    clip_prev = screen.get_clip()
+                    screen.set_clip(sr.clip(screen.get_rect()))
+                    # World-aligned tile phase so bricks never swim when scrolling camera
+                    world_start_x = col_rect.left - (col_rect.left % tw)
+                    for ty in range(sr.top, sr.bottom, th):
+                        for wx in range(world_start_x, col_rect.right, tw):
+                            screen.blit(self.tutorial_floor_tile, (wx - camera_x, ty))
+                    screen.set_clip(clip_prev)
+                    # Crisp 0-pixel-aligned top surface highlight & dark stone cliff edges
+                    pygame.draw.line(screen, (110, 215, 250), (sr.left, sr.top), (sr.right, sr.top), 2)
+                    pygame.draw.rect(screen, (20, 22, 34), sr, 2)
+                else:
+                    pygame.draw.rect(screen, (54, 58, 74), sr)
+                    pygame.draw.rect(screen, (100, 200, 240), (sr.x, sr.y, sr.width, 4))
+
+        elif self.is_golden_hall:
             for col_rect in self.collisions:
                 # Render only horizontal floor slabs (skip vertical walls / narrow barrier gates)
                 if col_rect.width < 120 or col_rect.top < 420:

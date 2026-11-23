@@ -191,6 +191,7 @@ class Game:
         self.outpost_barrier_rect = None
         self.judgement_hall_lock_rect = None
         self.sans_encounter_started = False
+        self.saved_cleared_enemies = {}
         self.boss_defeated = {"sans": False, "vergil": False}
         self.cleared_stages = {}
         self.level_cleared = False
@@ -279,7 +280,7 @@ class Game:
         if self.is_tutorial:
             return bool(
                 self.tutorial_manager is not None
-                and getattr(self.tutorial_manager, "gate3_open", False)
+                and getattr(self.tutorial_manager, "gate5_open", False)
             )
         if self.is_main_world():
             return self.boss_defeated.get("sans", False) or (
@@ -409,8 +410,9 @@ class Game:
 
     def respawn_regular_enemies(self):
         """
-        Respawn ONLY regular enemies (Slimers) at their initial spawn_pos with full HP & PATROL state.
-        NEVER resets or alters the current Boss (Sans / Vergil) — used by Checkpoint [E] Save & Heal!
+        Respawn regular enemies (Slimers) at their initial spawn_pos, SKIPPING any
+        enemies already persisted as defeated in self.saved_cleared_enemies at a Checkpoint!
+        NEVER resets or alters the current Boss (Sans / Vergil).
         """
         for mob in list(self.regular_enemies):
             if hasattr(mob, "_clear_contact_hitbox"):
@@ -418,8 +420,13 @@ class Game:
             mob.kill()
         self.regular_enemies.empty()
 
+        map_key = self.map_name()
+        cleared_ids = self.saved_cleared_enemies.get(map_key, set())
         self.regular_enemy_spawns = self._get_regular_enemy_spawn_specs()
-        for enemy_cls, sx, default_y, patrol_range in self.regular_enemy_spawns:
+        for idx, (enemy_cls, sx, default_y, patrol_range) in enumerate(self.regular_enemy_spawns):
+            spawn_id = f"{map_key}:slimer_{idx}"
+            if spawn_id in cleared_ids:
+                continue
             floor_y = self.get_floor_y_at(sx, default=int(default_y))
             mob = enemy_cls(
                 self.player,
@@ -428,6 +435,7 @@ class Game:
                 game_map=self.game_map,
                 patrol_range=patrol_range,
             )
+            mob.spawn_id = spawn_id
             self.regular_enemies.add(mob)
 
         self._rebuild_sprite_groups()
@@ -634,16 +642,15 @@ class Game:
                 self.stage_cleared = True
                 self._rebuild_sprite_groups()
         elif self.is_main_world():
-            # Seamless Stage 1: Golden Antechamber / Slime Outpost (x=0..1960) -> Judgement Hall / Sans (x=2120..3680)
+            # Seamless Stage 1: Golden Antechamber / Slime Outpost -> Judgement Hall / Sans (x=2120..3680)
             self.boss = None
             self.sans_encounter_started = False
             self.dialogue_box.active = False
             self.outpost_barrier_rect = None
             self.judgement_hall_lock_rect = None
             self.respawn_regular_enemies()
-            if not self.outpost_cleared:
-                self.outpost_barrier_rect = pygame.Rect(1960, 400, 32, 256)
-                self.game_map.collisions.append(self.outpost_barrier_rect)
+            if len(self.regular_enemies) == 0:
+                self.outpost_cleared = True
             if self.boss_defeated.get("sans", False):
                 self.level_cleared = True
                 self.stage_cleared = True
@@ -705,6 +712,7 @@ class Game:
             self.main_boss_defeated = False
             self.outpost_cleared = False
             self.sans_encounter_started = False
+            self.saved_cleared_enemies = {}
             self.boss_defeated = {"sans": False, "vergil": False}
             self.cleared_stages = {}
             self.level_cleared = False
@@ -832,11 +840,26 @@ class Game:
                     HealVFX(cp.spawn_pos[0], cp.spawn_pos[1], duration=0.90)
                 )
 
-                # Checkpoint [E] Save & Heal ONLY respawns regular enemies (Slimers),
-                # preserving Boss HP, position, and defeated state!
-                self.respawn_regular_enemies()
+                # Persist all currently defeated regular enemies in Save State so they NEVER
+                # resurrect on Checkpoint heal or subsequent death respawns!
+                map_key = self.map_name()
+                all_ids = {
+                    f"{map_key}:slimer_{idx}"
+                    for idx in range(len(self._get_regular_enemy_spawn_specs()))
+                }
+                alive_ids = {
+                    getattr(m, "spawn_id", None)
+                    for m in self.regular_enemies
+                    if m.alive()
+                }
+                cleared_now = all_ids - alive_ids
+                if cleared_now:
+                    self.saved_cleared_enemies.setdefault(map_key, set()).update(cleared_now)
+                if self.is_main_world() and len(alive_ids) == 0:
+                    self.outpost_cleared = True
+
                 print(
-                    f"[Checkpoint] Saved & Healed at {cp.name} {cp.spawn_pos}, Regular Enemies Respawned (Boss Preserved)."
+                    f"[Checkpoint] Saved & Healed at {cp.name} {cp.spawn_pos}; persisted {len(self.saved_cleared_enemies.get(map_key, ()))} cleared enemies."
                 )
                 return
 
@@ -1162,7 +1185,7 @@ class Game:
                             self.player.start_dash()
                         elif event.key == pygame.K_r:
                             self.player.start_drink_flask()
-                        elif event.key in (pygame.K_w, pygame.K_SPACE, pygame.K_UP):
+                        elif event.key == pygame.K_SPACE:
                             keys = pygame.key.get_pressed()
                             down_held = bool(keys[pygame.K_s] or keys[pygame.K_DOWN])
                             self.player.jump(down_pressed=down_held)
@@ -1432,8 +1455,6 @@ class Game:
                 self.rift_cutscene_active = False
                 self.rift_blackout_alpha = 0
                 self.rift_cutscene_stage = 0
-                self.player.status_text = "GOLDEN ANTECHAMBER — CLEAR THE SLIMERS"
-                self.player.status_timer = 1.8
 
         self.hud.update(raw_dt)
 
@@ -1607,29 +1628,18 @@ class Game:
         if self.tutorial_manager is not None:
             self.tutorial_manager.update(scaled_dt)
             if (
-                getattr(self.tutorial_manager, "gate3_open", False)
+                getattr(self.tutorial_manager, "gate5_open", False)
                 and not self.rift_cutscene_active
-                and self.player.pos_x >= 2880.0
+                and self.player.pos_x >= 4620.0
             ):
                 self.start_tutorial_rift_cutscene()
                 return
 
-        # Seamless Main World Progression: Outpost Barrier Unlock & Judgement Hall Pre-Boss Trigger!
+        # Seamless Main World Progression: Outpost Cleared flag
         if self.is_main_world():
             if not self.outpost_cleared and len(self.regular_enemies) == 0:
                 self.outpost_cleared = True
-                if (
-                    self.outpost_barrier_rect is not None
-                    and self.outpost_barrier_rect in self.game_map.collisions
-                ):
-                    self.game_map.collisions.remove(self.outpost_barrier_rect)
-                self.outpost_barrier_rect = None
                 self.audio.play_sfx("level_clear")
-                self.vfx_group.add(
-                    PortalTeleportVFX(1976, 656, duration=0.75, mode="arrive")
-                )
-                self.player.status_text = "BARRIER OPEN! ENTER JUDGEMENT HALL >>"
-                self.player.status_timer = 1.6
 
         # Check Stage Clear Condition -> Persist boss_defeated & level_cleared, Unlock Portals & Spawn Victory Checkpoint!
         if not self.stage_cleared and self.check_stage_clear_condition():
@@ -1682,7 +1692,7 @@ class Game:
             self.main_menu.draw(self.screen)
             self.hud.draw_text(
                 self.screen,
-                "A/D: Move | W/SPACE: Jump | Q: Dash | [Left Click] Attack | Air S+[Left Click] Pogo | [Right Click] Parry | E: Interact | F1: Debug",
+                "A/D: Move | SPACE: Jump | Q: Dash | [Left Click] Attack | Air S+[Left Click] Pogo | [Right Click] Parry | R: Flask | E: Interact | F1: Debug",
                 self.hud.font_hud,
                 (160, 190, 230),
                 (WIDTH // 2, 650),
@@ -1729,18 +1739,6 @@ class Game:
             self.game_map.draw(
                 self.world_surface, self.camera_x - shake_dx, self.camera_y - shake_dy
             )
-
-            # Draw Outpost Energy Barrier Gate (x=1960) while locked
-            if self.outpost_barrier_rect is not None and not self.outpost_cleared:
-                br = self.outpost_barrier_rect.move(-self.camera_x, -self.camera_y)
-                bar_surf = pygame.Surface((br.width, br.height), pygame.SRCALPHA)
-                bar_surf.fill((40, 195, 255, 115))
-                self.world_surface.blit(bar_surf, br.topleft)
-                pygame.draw.rect(self.world_surface, (110, 240, 255), br, 3)
-                b_lbl = self.font_hud.render("CLEAR SLIMERS", False, (195, 248, 255))
-                self.world_surface.blit(
-                    b_lbl, b_lbl.get_rect(center=(br.centerx, br.top - 14))
-                )
 
             # 1. Draw Guided Tutorial world elements (gates, spikes, signposts, dummy/guardian UI)
             if self.tutorial_manager is not None:
@@ -1993,7 +1991,7 @@ class Game:
                 )
                 self.screen.blit(obj_surf, (ox + 12, oy + 6))
 
-            if self.portal_unlock_banner_timer > 0.0:
+            if self.portal_unlock_banner_timer > 0.0 and not self.is_tutorial:
                 self.hud.draw_text(
                     self.screen,
                     "PORTAL UNLOCKED!",
