@@ -21,7 +21,7 @@
     <property name="one_way" type="bool" value="true"/>
    </properties>
   </object>
-  <object id="30" x="1720" y="464" width="160" height="16">
+  <object id="30" x="1712" y="496" width="160" height="16">
    <properties>
     <property name="one_way" type="bool" value="true"/>
    </properties>
