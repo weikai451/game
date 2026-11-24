@@ -50,8 +50,9 @@ TUTORIAL_PATH = "map/tutorial.tmx"
 # Map filenames containing these keywords are treated as Boss Arenas (fixed camera, Boss fight)
 BOSS_ARENA_KEYWORDS = ("boss1arena", "boss1_arena", "boss1", "bass1")
 
-# Delay (in seconds) after defeating the Boss in the arena before returning to the next checkpoint
+# Delay (in seconds) after defeating the final Boss (Vergil) before showing THE END screen
 VICTORY_RETURN_DELAY = 3.0
+GAME_END_DELAY = 2.0
 
 # Optional custom triggers per map
 MAP_TRIGGERS = {}
@@ -183,8 +184,9 @@ class Game:
         self.respawn_position = (140.0, 640.0)
         self.checkpoint_msg_timer = 0.0
 
-        # Boss arena victory timer & main world Boss defeat flag
+        # Boss arena victory timer, ending timer & main world Boss defeat flag
         self.victory_timer = 0.0
+        self.ending_timer = 0.0
         self.main_boss_defeated = False
 
         # Bullet Time, Hitstop, Screen Dimming, Screen Shake & Stage Clear timers
@@ -754,6 +756,7 @@ class Game:
         self.screen_dim_timer = 0.0
         self.zoom_scale = 1.0
         self.transition_cooldown = 0.0
+        self.ending_timer = 0.0
         self.rift_cutscene_active = False
         self.rift_cutscene_timer = 0.0
         self.rift_cutscene_stage = 0
@@ -1274,6 +1277,15 @@ class Game:
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
                     self.state = State.MENU
 
+            # ---------- 6. Ending Screen (THE END) ----------
+            elif self.state == State.ENDING:
+                if (
+                    event.type == pygame.KEYDOWN
+                    and event.key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_ESCAPE)
+                ) or (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1):
+                    self.audio.play_sfx("sheathe")
+                    self.state = State.MENU
+
     def get_all_active_hitboxes(self):
         """
         Collect all active hitboxes from the shared list, the current Boss,
@@ -1562,7 +1574,7 @@ class Game:
         if was_transitioning and not self.transition.is_transitioning:
             self.player.is_teleporting = False
 
-        if self.state in (State.MENU, State.TUTORIAL_PROMPT):
+        if self.state in (State.MENU, State.TUTORIAL_PROMPT, State.ENDING):
             self.main_menu.update(raw_dt)
             if self.menu_fade_active:
                 self.menu_fade_alpha = min(255.0, self.menu_fade_alpha + (255.0 / 0.42) * raw_dt)
@@ -1759,7 +1771,15 @@ class Game:
         self.hud.update(raw_dt)
         self.update_camera(raw_dt)
 
-        # 11. Handle Boss Arena outcome or Soul-like Death Respawn
+        # 11. Handle Final Victory Ending, Boss Arena outcome or Soul-like Death Respawn
+        if self.boss_defeated.get("vergil", False):
+            self.ending_timer += raw_dt
+            if self.ending_timer >= GAME_END_DELAY:
+                self.ending_timer = 0.0
+                self.audio.stop_bgm(fadeout_ms=600)
+                self.state = State.ENDING
+                return
+
         if self.is_boss_arena():
             self.handle_boss_arena_outcome(raw_dt)
         elif self.player.player_hp <= 0 and not self.debug_mode:
@@ -2133,6 +2153,34 @@ class Game:
                 self.hud.font_small,
                 (220, 220, 220),
                 (WIDTH // 2, 420),
+            )
+
+        elif self.state == State.ENDING:
+            # INDIE CROSS Dimensional Rift Ending Screen (adopted & styled from origin/fish)
+            self.main_menu.draw_void_background(self.screen)
+            cx, cy = WIDTH // 2, HEIGHT // 2 - 48
+            self.hud.draw_text(
+                self.screen, "THE END", self.font_title_main, (230, 46, 77), (cx - 5, cy + 3)
+            )
+            self.hud.draw_text(
+                self.screen, "THE END", self.font_title_main, (0, 216, 255), (cx + 5, cy + 3)
+            )
+            self.hud.draw_text(
+                self.screen, "THE END", self.font_title_main, (255, 255, 255), (cx, cy)
+            )
+            self.hud.draw_text(
+                self.screen,
+                "THANKS FOR PLAYING INDIE CROSS",
+                self.hud.font_small,
+                (170, 215, 255),
+                (WIDTH // 2, HEIGHT // 2 + 44),
+            )
+            self.hud.draw_text(
+                self.screen,
+                "Press ENTER or SPACE to Return to Menu",
+                self.hud.font_hud,
+                (180, 190, 215),
+                (WIDTH // 2, HEIGHT // 2 + 106),
             )
 
         # Layer 3 Foreground Screen-Breaking VFX Overlay (above ALL entities, camera zoom, and HUD!)

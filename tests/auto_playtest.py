@@ -291,7 +291,12 @@ def run_all_tests():
     vergil.take_damage(100)
     assert vergil.state == BossState.DYING, f"Vergil should enter DYING on fatal blow, got {vergil.state}"
     step_until(game, lambda: game.boss_defeated.get("vergil", False), 6.0, "Vergil 4.4s DYING Cutscene")
-    print("[PASS] 6. Vergil Dimension-Slash Title Card, 3 Phases (200/133/66), JCE & DYING Cutscene OK")
+    step_until(game, lambda: game.state == State.ENDING, 3.0, "Post-Vergil 2.0s -> State.ENDING ('THE END')")
+    save_shot(game, "08_ending_screen.png")
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN))
+    step(game, 0.1)
+    assert game.state == State.MENU, f"Pressing ENTER on THE END should return to MENU (got {game.state})"
+    print("[PASS] 6. Vergil Dimension-Slash Title Card, 3 Phases, DYING Cutscene & THE END Screen OK")
 
     pygame.quit()
     print("\n=== ALL AUTOMATED PLAYTEST CHECKS PASSED (ZERO CRASHES / ZERO SOFT-LOCKS) ===")
